@@ -9,36 +9,20 @@ let users = {};
 
 app.post('/webhook', async (req, res) => {
   try {
-    // --- UNIVERSAL PARSER FOR V2 AND V3 ---
     let body = req.body;
-    console.log("HIT:", JSON.stringify(body).substring(0, 1500));
+    console.log("HIT:", JSON.stringify(body).substring(0,3000));
 
-    // v2: body is direct, v3 Meta: body.payload contains everything
-    let p = body.payload || body;
+    let sender = "";
+    let textRaw = "";
 
-    // SENDER - try all possible paths
-    let sender =
-        p.source ||
-        p.sender?.phone ||
-        p.payload?.source ||
-        p.payload?.sender?.phone ||
-        p.payload?.payload?.source ||
-        p.payload?.payload?.sender?.phone ||
-        body.source ||
-        p.phone || "";
-
-    // TEXT - try all possible paths for Meta v3
-    let textRaw =
-        p.payload?.payload?.text ||
-        p.payload?.text ||
-        p.payload?.payload?.payload?.text ||
-        p.payload?.payload?.text ||
-        p.text ||
-        p.payload?.message?.text ||
-        p.message || "";
+    // THIS IS YOUR FORMAT FROM SCREENSHOT
+    if (body.entry && body.entry[0]?.changes?.[0]?.value?.messages?.[0]) {
+      let m = body.entry[0].changes[0].value.messages[0];
+      sender = m.from;
+      textRaw = m.text?.body || "";
+    }
 
     console.log(`Sender raw: ${sender} | Text raw: ${textRaw}`);
-
     if (!sender) return res.sendStatus(200);
 
     sender = String(sender).replace(/\D/g,'');
@@ -46,62 +30,54 @@ app.post('/webhook', async (req, res) => {
     let u = users[sender] || {step:"start"};
     let reply = "";
 
-    if (msg=="hi" || msg=="hello" || msg=="book" || msg=="hi there" || msg=="") {
+    if (msg.includes("hi") || msg.includes("need") || msg=="") {
       users[sender]={step:"start"};
-      reply="🚖 *DALLAS BOLT* - Desi Rides\n\n1️⃣ Book Ride\n2️⃣ My Rides\n3️⃣ Support +1 321 366 8451\n\nReply number.\nCheap, Telugu/English, Girls safe, Veg driver.";
+      reply="🚖 *DALLAS BOLT* - Desi Rides\n\n1️⃣ Book Ride\n2️⃣ My Rides\n3️⃣ Support +1 321 366 8451\n\nReply number.";
     } else if (msg=="1") {
       users[sender]={step:"pickup"};
-      reply="Where pickup? Send address.\nEx: UTD, 10325 Audelia Rd";
+      reply="Where pickup? Send address.";
     } else if (u.step=="pickup") {
       users[sender]={step:"drop", pickup:textRaw};
       reply="Drop where?";
     } else if (u.step=="drop") {
       users[sender]={step:"lang", pickup:u.pickup, drop:textRaw};
-      reply="Language?\n1. English OK\n2. Only Telugu + Broken English\nReply 1 or 2";
+      reply="Language?\n1. English\n2. Only Telugu\nReply 1 or 2";
     } else if (u.step=="lang") {
       let lang = msg=="2"?"Telugu/Broken":"English";
       users[sender]={step:"special", pickup:u.pickup, drop:u.drop, lang:lang};
-      reply="Any special?\n1. Girls Only 👩\n2. Veg Only\n3. None\n4. Both Girls+Veg\nReply 1-4";
+      reply="Any special?\n1. Girls Only\n2. Veg Only\n3. None\n4. Both\nReply 1-4";
     } else if (u.step=="special") {
-      let sp = {"1":"Girls Only","2":"Veg Only","3":"None","4":"Girls+Veg"}[msg] || "None";
-      reply=`✅ Ride Booked!\n\n📍 Pickup: ${u.pickup}\n📍 Drop: ${u.drop}\n🗣️ ${u.lang}\n✨ ${sp}\n💰 $25-35\n💳 Zelle: 3213668451\nDriver will call in 5 mins. Q#${Math.floor(Math.random()*100)+1}`;
-      let adminMsg=`🚨 NEW RIDE:\nPhone:${sender}\nFrom:${u.pickup} to ${u.drop}\nLang:${u.lang}\nSpecial:${sp}`;
-      await sendMsg(ADMIN, adminMsg);
+      let sp = {"1":"Girls Only","2":"Veg Only","3":"None","4":"Both"}[msg] || "None";
+      reply=`✅ Ride Booked!\nPickup: ${u.pickup}\nDrop: ${u.drop}\nLang: ${u.lang}\nSpecial: ${sp}\n$25-35 Zelle 3213668451`;
+      await sendMsg(ADMIN, `🚨 NEW RIDE: ${sender} From ${u.pickup} to ${u.drop}`);
       users[sender]={step:"start"};
     } else {
-      reply="Reply HI to start booking";
+      reply="Reply HI to start";
     }
 
-    if (reply) {
-      await sendMsg(sender, reply);
-    }
+    const key = process.env.GUPSHUP_API_KEY;
+    const params = new URLSearchParams();
+    params.append('channel','whatsapp');
+    params.append('source', SOURCE);
+    params.append('destination', sender);
+    params.append('message', JSON.stringify({type:"text", text:reply}));
+    params.append('src.name','RidesChat');
+    let r = await fetch('https://api.gupshup.io/sm/api/v1/msg',{method:'POST',headers:{'apikey':key,'Content-Type':'application/x-www-form-urlencoded'},body:params});
+    console.log("Send:", await r.text());
 
   } catch(e){console.log("ERR:", e.message);}
   res.sendStatus(200);
 });
 
 async function sendMsg(dest, txt){
-  try {
-    const key = process.env.GUPSHUP_API_KEY;
-    if (!key) { console.log("MISSING GUPSHUP_API_KEY!"); return; }
-    const params = new URLSearchParams();
-    params.append('channel','whatsapp');
-    params.append('source', SOURCE);
-    params.append('destination', dest);
-    params.append('message', JSON.stringify({type:"text", text:txt}));
-    params.append('src.name','RidesChat');
-
-    let resp = await fetch('https://api.gupshup.io/sm/api/v1/msg',{
-      method:'POST',
-      headers:{'apikey':key, 'Content-Type':'application/x-www-form-urlencoded'},
-      body:params
-    });
-    let data = await resp.text();
-    console.log(`Send to ${dest}: ${data.substring(0,300)}`);
-  } catch (err) {
-    console.log("Send error:", err.message);
-  }
+  const key = process.env.GUPSHUP_API_KEY;
+  const params = new URLSearchParams();
+  params.append('channel','whatsapp'); params.append('source', SOURCE);
+  params.append('destination', dest); params.append('message', JSON.stringify({type:"text", text:txt}));
+  params.append('src.name','RidesChat');
+  let r = await fetch('https://api.gupshup.io/sm/api/v1/msg',{method:'POST',headers:{'apikey':key,'Content-Type':'application/x-www-form-urlencoded'},body:params});
+  console.log(await r.text());
 }
 
-app.get('/',(req,res)=>res.send("Dallas Bolt LIVE v3 FIXED"));
+app.get('/',(req,res)=>res.send("Dallas Bolt LIVE META FIXED"));
 app.listen(process.env.PORT || 10000, ()=>console.log("Running"));
