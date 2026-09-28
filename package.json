@@ -1,0 +1,67 @@
+const express = require('express');
+const app = express();
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+const SOURCE = "254726705909";
+const ADMIN = "13213668451";
+const ZELLE = "13213668451";
+let userData = {}; // {phone: {step, pickup, drop, lang}}
+
+app.post('/webhook', async (req, res) => {
+  try {
+    let p = req.body.payload || req.body;
+    let sender = p.sender?.phone || p.source || p.phone || "";
+    let msgRaw = p.payload?.text || p.text || "";
+    if (!sender) return res.sendStatus(200);
+
+    sender = String(sender).replace(/\D/g,'');
+    let msg = String(msgRaw).toLowerCase().trim();
+    let state = userData[sender] || {step: "start"};
+    let reply = "";
+
+    if (msg == "hi" || msg == "hello" || msg == "book" || msg == "start") {
+      userData[sender] = {step: "start"};
+      reply = `🚖 *DALLAS BOLT* - Desi Rides\n\n1️⃣ Book Ride\n2️⃣ My Rides\n3️⃣ Support +1 321 366 8451\n\nReply with number.\n\nCheap, Telugu/English, Girls safe, Veg driver available.`;
+    }
+    else if (msg == "1" && state.step == "start") {
+      userData[sender] = {step: "pickup"};
+      reply = `Where pickup? Send location or address.\n\nEx: UTD, 10325 Audelia Rd`;
+    }
+    else if (state.step == "pickup") {
+      userData[sender] = {step: "drop", pickup: msgRaw};
+      reply = `Drop where?`;
+    }
+    else if (state.step == "drop") {
+      userData[sender] = {step: "lang", pickup: state.pickup, drop: msgRaw};
+      reply = `Language?\n1. English OK\n2. Only Telugu + Broken English\n\nReply 1 or 2`;
+    }
+    else if (state.step == "lang") {
+      let lang = msg == "2"? "Telugu/Broken" : "English";
+      userData[sender] = {step: "special", pickup: state.pickup, drop: state.drop, lang: lang};
+      reply = `Any special?\n1. Girls Only Driver 👩\n2. Veg Driver Only\n3. None\n4. Both Girls+Veg\n\nReply 1-4`;
+    }
+    else if (state.step == "special") {
+      let specials = {"1":"Girls Only","2":"Veg Only","3":"None","4":"Girls+Veg"};
+      let special = specials[msg] || "None";
+      let price = "$25-35 (final after driver assign)";
+
+      reply = `✅ Ride Booked!\n\n📍 Pickup: ${state.pickup}\n📍 Drop: ${state.drop}\n🗣️ ${state.lang}\n✨ ${special}\n💰 ${price}\n💳 Zelle: ${ZELLE}\n\nDriver will call you in 5 mins.\nQueue #${Math.floor(Math.random()*100)+1}`;
+
+      // Notify ADMIN (you) about new ride
+      let adminMsg = `🚨 NEW DALLAS RIDE:\nPhone: ${sender}\nFrom: ${state.pickup} to ${state.drop}\nLang: ${state.lang}\nSpecial: ${special}`;
+      await sendWAMessage(ADMIN, adminMsg);
+
+      userData[sender] = {step: "start"};
+    } else {
+      reply = `Reply HI to start booking Dallas rides.`;
+    }
+
+    await sendWAMessage(sender, reply);
+
+  } catch(e){ console.log(e); }
+  res.sendStatus(200);
+});
+
+async function sendWAMessage(dest, text) {
+  const apiKey = process.env.GUPSHUP
