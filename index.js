@@ -76,21 +76,33 @@ async function parseWithAI(msg) {
     }
 }
 
+// FIXED: Gupshup Authorization Required
 async function sendGupshupMessage(toPhone, messageText) {
     if (!toPhone) return;
-    const cleanPhone = toPhone.replace('@s.whatsapp.net', '').replace('+', '').trim()
-    const params = new URLSearchParams({
-        channel: 'whatsapp',
-        source: process.env.GUPSHUP_APP_NUMBER,
-        destination: cleanPhone,
-        'src.name': process.env.GUPSHUP_APP_NAME,
-        message: JSON.stringify({ type: 'text', text: messageText })
-    })
+    const cleanPhone = toPhone.replace('@s.whatsapp.net', '').replace('+', '').trim();
+    const params = new URLSearchParams();
+    params.append('channel', 'whatsapp');
+    params.append('source', process.env.GUPSHUP_APP_NUMBER);
+    params.append('destination', cleanPhone);
+    params.append('src.name', process.env.GUPSHUP_APP_NAME);
+    params.append('message', JSON.stringify({ type: 'text', text: messageText }));
+    const apiKey = (process.env.GUPSHUP_API_KEY || process.env.GUPSHUP_APIKEY || '').trim();
+    if (!apiKey) {
+        console.error('GUPSHUP API Key missing!');
+        return;
+    }
     try {
-        await axios.post('https://api.gupshup.io/sm/api/v1/msg', params, {
-            headers: { 'apikey': process.env.GUPSHUP_API_KEY, 'Content-Type': 'application/x-www-form-urlencoded' }
-        })
-    } catch (err) { console.error('Gupshup send error:', err.response?.data || err.message) }
+        const res = await axios.post('https://api.gupshup.io/sm/api/v1/msg', params.toString(), {
+            headers: {
+                'apikey': apiKey,
+                'Authorization': apiKey,
+                'Content-Type': 'application/x-www-form-urlencoded'
+            }
+        });
+        console.log('Gupshup sent OK:', res.data?.status || 'submitted');
+    } catch (err) {
+        console.error('Gupshup send error:', err.response?.data || err.message);
+    }
 }
 
 function formatRequests(reqs) {
@@ -135,7 +147,7 @@ app.post('/webhook', async (req, res) => {
         const user = await User.getOrCreate(phone)
         const ai = await parseWithAI(text)
         console.log(`[${phone}] Text: "${text}" -> AI:`, ai)
-        if (ai.role === 'greeting' || (!ai.from &&!ai.to && (!ai.command || ai.command === 'null'))) {
+        if (ai.role === 'greeting' || (!ai.from &&!ai.to && (!ai.command || ai.command === 'null' || ai.command === null))) {
             await sendGupshupMessage(phone, `👋 Welcome to Rideschat!\n\nSend like:\n• Need ride Denton to Dallas tomorrow 5pm\n• Driver ON near UNT\n• TAKE 1\n• 5 stars to rate`)
             return
         }
