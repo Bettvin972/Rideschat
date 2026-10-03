@@ -3,6 +3,7 @@ const express = require('express');
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
+const pino = require('pino');
 const { sequelize, User, RideRequest, RideOffer } = require('./database');
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
 const qrcode = require('qrcode-terminal');
@@ -22,8 +23,12 @@ async function startWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_PATH);
     sock = makeWASocket({
         auth: state,
+        logger: pino({ level: 'silent' }),
         printQRInTerminal: false,
         browser: ["Rideschat", "Chrome", "1.0"],
+        shouldSyncHistoryMessage: () => false,
+        syncFullHistory: false,
+        markOnlineOnConnect: false,
         getMessage: async () => undefined
     });
     sock.ev.on('creds.update', saveCreds);
@@ -37,6 +42,7 @@ async function startWhatsApp() {
         if(connection === 'open') { console.log('WhatsApp Connected!'); qrLast = null; }
         if(connection === 'close') {
             const shouldReconnect = lastDisconnect?.error?.output?.statusCode!== DisconnectReason.loggedOut;
+            console.log('Closed, reconnect:', shouldReconnect);
             if(shouldReconnect) setTimeout(startWhatsApp, 3000);
         }
     });
@@ -47,19 +53,16 @@ async function startWhatsApp() {
             if (!msg.message) return;
             if (msg.key.fromMe) return;
             const remoteJid = msg.key.remoteJid || "";
-            if (remoteJid.includes('@lid') || remoteJid === 'status@broadcast' || remoteJid.includes('@g.us')) return;
+            // FIXED: Allow @lid - new WhatsApp privacy IDs
+            if (remoteJid === 'status@broadcast' || remoteJid.includes('@g.us')) return;
             if (msg.message.protocolMessage) return;
-            const phone = remoteJid.replace('@s.whatsapp.net','').replace('@c.us','');
             const text = msg.message.conversation || msg.message.extendedTextMessage?.text || msg.message.imageMessage?.caption || "";
             if (!text) return;
-            console.log(`MSG [${phone}]: ${text}`);
-            await handleRideLogic(phone.trim(), text);
+            console.log(`MSG [${remoteJid}]: ${text}`);
+            await handleRideLogic(remoteJid, text);
         } catch (e) {
             const m = e.message || "";
-            if (m.includes('Bad MAC') || m.includes('SessionError') || m.includes('No matching')) {
-                console.log('Ignored SessionError:', m);
-                return;
-            }
+            if (m.includes('Bad MAC') || m.includes('SessionError') || m.includes('No matching')) return;
             console.error('upsert error:', m);
         }
     });
@@ -67,7 +70,7 @@ async function startWhatsApp() {
 startWhatsApp();
 
 process.on('uncaughtException', (err) => {
-    if (err.message && err.message.includes('Bad MAC')) return;
+    if (err.message && (err.message.includes('Bad MAC') || err.message.includes('SessionError'))) return;
     console.error('Uncaught:', err);
 });
 process.on('unhandledRejection', (reason) => {
@@ -112,13 +115,16 @@ async function parseWithAI(msg) {
     }
 }
 
-async function sendGupshupMessage(toPhone, messageText) {
-    if (!toPhone ||!sock) return;
+async function sendGupshupMessage(toJid, messageText) {
+    if (!toJid ||!sock) return;
     try {
-        let jid = toPhone.replace('@s.whatsapp.net', '').replace('+', '').replace('@lid','').trim();
-        if(!jid.includes('@')) jid = jid + '@s.whatsapp.net';
+        // FIXED: Use JID directly - supports both @lid and @s.whatsapp.net
+        let jid = toJid;
+        if (!jid.includes('@')) {
+            jid = jid.replace('+','').trim() + '@s.whatsapp.net';
+        }
         await sock.sendMessage(jid, { text: messageText });
-        console.log('Sent to ' + toPhone);
+        console.log('Sent to ' + jid);
     } catch (err) { console.error('Send error:', err.message); }
 }
 
@@ -126,69 +132,71 @@ function formatRequests(reqs) {
     if (!reqs || reqs.length === 0) return "No active rides. Try: Need ride Juja to Nairobi tomorrow 5pm";
     return reqs.map(function(r){
         var girls = r.girls_only? ' GIRLS ONLY' : '';
-        return r.id + ". " + r.from + "->" + r.to + " " + r.date + " " + (r.time || '') + " Bags:" + r.bags + girls + " wa.me/" + r.phone;
+        var contact = r.phone.includes('@')? r.phone : 'wa.me/' + r.phone;
+        return r.id + ". " + r.from + "->" + r.to + " " + r.date + " " + (r.time || '') + " Bags:" + r.bags + girls + " " + contact;
     }).join('\n');
 }
 function formatOffers(offers) {
     if (!offers || offers.length === 0) return "No active offers.";
     return offers.map(function(o,i){
-        return (i+1) + ". " + o.from + "->" + o.to + " " + o.date + " " + (o.time || '') + " " + o.seats + "seats KES" + o.price + " " + o.rating + " star wa.me/" + o.phone;
+        var contact = o.phone.includes('@')? o.phone : 'wa.me/' + o.phone;
+        return (i+1) + ". " + o.from + "->" + o.to + " " + o.date + " " + (o.time || '') + " " + o.seats + "seats KES" + o.price + " " + o.rating + " star " + contact;
     }).join('\n');
 }
 
-async function handleRideLogic(phone, text) {
+async function handleRideLogic(phoneJid, text) {
     try {
-        var user = await User.getOrCreate(phone);
+        var user = await User.getOrCreate(phoneJid);
         var ai = await parseWithAI(text);
-        console.log("[" + phone + "] -> AI: " + JSON.stringify(ai));
+        console.log("[" + phoneJid + "] -> AI: " + JSON.stringify(ai));
         if (ai.role === 'greeting' || (!ai.from &&!ai.to && (!ai.command || ai.command === 'null' || ai.command === null))) {
-            await sendGupshupMessage(phone, "Welcome to Rideschat Kenya!\n\nHow to use:\nRIDER: Need ride Juja to Nairobi tomorrow 5pm\nDRIVER: Driver ON near Juja\nTo accept: TAKE 1\nRate: 5 stars");
+            await sendGupshupMessage(phoneJid, "Welcome to Rideschat Kenya!\n\nHow to use:\nRIDER: Need ride Juja to Nairobi tomorrow 5pm\nDRIVER: Driver ON near Juja\nTo accept: TAKE 1\nRate: 5 stars");
             return;
         }
         if (ai.role === 'rider' && (!ai.from ||!ai.to)) {
-            await sendGupshupMessage(phone, "Where to where? Example: Need ride Juja to Thika tomorrow 5pm");
+            await sendGupshupMessage(phoneJid, "Where to where? Example: Need ride Juja to Thika tomorrow 5pm");
             return;
         }
         if (ai.role === 'command') {
             if (ai.command === 'ONLINE') {
                 await user.setOnline(ai.from || "Juja", 2);
                 var nearby = await RideRequest.getNearby(user.location);
-                await sendGupshupMessage(phone, "Rideschat: ONLINE 2hrs near " + user.location + " on " + (ai.date || 'today') + "\nRating: " + user.rating.toFixed(1) + " star\n" + formatRequests(nearby) + "\nType TAKE <id> to accept ride");
+                await sendGupshupMessage(phoneJid, "Rideschat: ONLINE 2hrs near " + user.location + " on " + (ai.date || 'today') + "\nRating: " + user.rating.toFixed(1) + " star\n" + formatRequests(nearby) + "\nType TAKE <id> to accept ride");
             }
-            if (ai.command === 'OFFLINE') { await user.setOffline(); await sendGupshupMessage(phone, "Rideschat: OFFLINE. You won't get ride alerts."); }
-            if (ai.command === 'SHOW_REQUESTS') { var nearby2 = await RideRequest.getNearby("Juja"); await sendGupshupMessage(phone, "Rides near Juja:\n" + formatRequests(nearby2)); }
+            if (ai.command === 'OFFLINE') { await user.setOffline(); await sendGupshupMessage(phoneJid, "Rideschat: OFFLINE. You won't get ride alerts."); }
+            if (ai.command === 'SHOW_REQUESTS') { var nearby2 = await RideRequest.getNearby("Juja"); await sendGupshupMessage(phoneJid, "Rides near Juja:\n" + formatRequests(nearby2)); }
             if (ai.command === 'TAKE') {
                 var ride = await RideRequest.findById(ai.takeId);
                 if (ride) {
                     await ride.updateStatus("TAKEN");
-                    await sendGupshupMessage(phone, "You claimed ride " + ride.id + ". Rider: wa.me/" + ride.phone + " - Call them now!");
-                    await sendGupshupMessage(ride.phone, "Driver on the way! " + user.phone + " Rating: " + user.rating.toFixed(1) + " star - Contact: wa.me/" + phone + "\nFrom: " + ride.from + " To: " + ride.to);
-                } else { await sendGupshupMessage(phone, "Ride ID " + ai.takeId + " not found or already taken."); }
+                    await sendGupshupMessage(phoneJid, "You claimed ride " + ride.id + ". Rider: " + ride.phone + " - Call them now!");
+                    await sendGupshupMessage(ride.phone, "Driver on the way! " + user.phone + " Rating: " + user.rating.toFixed(1) + " star - Contact: " + phoneJid + "\nFrom: " + ride.from + " To: " + ride.to);
+                } else { await sendGupshupMessage(phoneJid, "Ride ID " + ai.takeId + " not found or already taken."); }
             }
-            if (ai.command === 'RATING') { await user.addRating(ai.rating); await sendGupshupMessage(phone, "Thanks! You rated " + ai.rating + " star"); }
+            if (ai.command === 'RATING') { await user.addRating(ai.rating); await sendGupshupMessage(phoneJid, "Thanks! You rated " + ai.rating + " star"); }
             return;
         }
         if (ai.role === 'rider') {
-            var rideReq = await RideRequest.createCustom(phone, ai);
+            var rideReq = await RideRequest.createCustom(phoneJid, ai);
             var matches = await RideOffer.perfectMatch(rideReq);
             if (matches && matches.length > 0) {
-                await sendGupshupMessage(phone, "Rideschat: Found " + matches.length + " driver(s) for " + rideReq.date + " " + (rideReq.time || '') + "\n" + formatOffers(matches) + "\nContact driver via link.");
+                await sendGupshupMessage(phoneJid, "Rideschat: Found " + matches.length + " driver(s) for " + rideReq.date + " " + (rideReq.time || '') + "\n" + formatOffers(matches));
             } else {
-                await sendGupshupMessage(phone, "Rideschat: Booked! No driver online yet for " + rideReq.from + "->" + rideReq.to + " on " + rideReq.date + " " + (rideReq.time || '') + ". We will alert drivers near you.");
+                await sendGupshupMessage(phoneJid, "Rideschat: Booked! No driver online yet for " + rideReq.from + "->" + rideReq.to + " on " + rideReq.date + " " + (rideReq.time || '') + ". We will alert drivers near you.");
                 var drivers = await User.getOnlineNearby(rideReq.from);
                 for (var j=0;j<drivers.length;j++) {
-                    await sendGupshupMessage(drivers[j].phone, "NEW RIDE near you! " + rideReq.from + "->" + rideReq.to + " " + rideReq.date + " " + (rideReq.time || '') + " Bags:" + rideReq.bags + " \nTAKE " + rideReq.id + " to accept\nRider: wa.me/" + phone);
+                    await sendGupshupMessage(drivers[j].phone, "NEW RIDE near you! " + rideReq.from + "->" + rideReq.to + " " + rideReq.date + " " + (rideReq.time || '') + " Bags:" + rideReq.bags + " \nTAKE " + rideReq.id + " to accept\nRider: " + phoneJid);
                 }
             }
             return;
         }
         if (ai.role === 'driver') {
-            var offer = await RideOffer.createCustom(phone, ai);
+            var offer = await RideOffer.createCustom(phoneJid, ai);
             var riders = await RideRequest.getMatchingRiders(offer);
             if (riders.length > 0) {
-                await sendGupshupMessage(phone, "Rideschat: " + riders.length + " rider(s) need " + offer.date + "!\n" + formatRequests(riders));
+                await sendGupshupMessage(phoneJid, "Rideschat: " + riders.length + " rider(s) need " + offer.date + "!\n" + formatRequests(riders));
             } else {
-                await sendGupshupMessage(phone, "Offer posted: " + offer.from + "->" + offer.to + " " + offer.date + " " + (offer.time || '') + " - Waiting for riders.");
+                await sendGupshupMessage(phoneJid, "Offer posted: " + offer.from + "->" + offer.to + " " + offer.date + " " + (offer.time || '') + " - Waiting for riders.");
             }
         }
     } catch (err) { console.error('Error:', err.stack || err.message); }
