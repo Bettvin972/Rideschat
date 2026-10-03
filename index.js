@@ -43,6 +43,7 @@ Message: "{MSG}"
 JSON only.
 `;
 
+// FIXED: fallback models to avoid 503 + 404
 async function parseWithAI(msg) {
     const now = new Date()
     const tomorrow = new Date()
@@ -51,14 +52,12 @@ async function parseWithAI(msg) {
     const prompt = AI_PROMPT.replaceAll("{TODAY_INFO}", todayInfo).replaceAll("{TODAY_DATE}", now.toISOString().split('T')[0]).replaceAll("{TOMORROW_DATE}", tomorrow.toISOString().split('T')[0]).replace("{MSG}", msg)
 
     const apiKey = process.env.GEMINI_API_KEY
-    if (!apiKey) throw new Error("GEMINI_API_KEY missing in Render Env")
+    if (!apiKey) throw new Error("GEMINI_API_KEY missing")
 
-    // Fallback chain - tries lightest first
     const models = ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-3.5-flash-lite", "gemini-3.8-flash"]
-
     for (let modelName of models) {
         try {
-            console.log(`Trying Gemini model: ${modelName}`)
+            console.log(`Trying ${modelName}`)
             const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`
             const res = await axios.post(url, {
                 contents: [{ parts: [{ text: prompt }] }],
@@ -71,7 +70,7 @@ async function parseWithAI(msg) {
             console.log(`Success with ${modelName}`)
             return data
         } catch (err) {
-            console.log(`Model ${modelName} failed: ${err.response?.data?.error?.message || err.message}`)
+            console.log(`Failed ${modelName}: ${err.response?.data?.error?.message || err.message}`)
             if (modelName === models[models.length - 1]) throw err
         }
     }
@@ -170,4 +169,12 @@ app.post('/webhook', async (req, res) => {
             const offer = await RideOffer.create(phone, ai)
             const riders = await RideRequest.getMatchingRiders(offer)
             if (riders.length > 0) { await sendGupshupMessage(phone, `🔥 Rideschat: ${riders.length} riders need ${offer.date}!\n${formatRequests(riders)}`) }
-            else { await sendGupshupMessage(phone, `Rideschat Offer posted: ${offer.from}->${offer.to} ${offer.date} ${offer.time || ''}
+            else { await sendGupshupMessage(phone, `Rideschat Offer posted: ${offer.from}->${offer.to} ${offer.date} ${offer.time || ''} ${offer.seats} seats $${offer.price} (${offer.rating}⭐)`) }
+        }
+    } catch (err) { console.error('Error handling webhook:', err.response?.data || err.message) }
+})
+
+app.get('/ping', (req, res) => res.send("Rideschat Alive"))
+app.get('/', (req, res) => res.send("Rideschat LIVE"))
+const PORT = process.env.PORT || 10000
+app.listen(PORT, () => console.log(`Rideschat running on port ${PORT}`))
