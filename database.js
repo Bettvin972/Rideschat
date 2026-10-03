@@ -44,7 +44,12 @@ const RideOffer = sequelize.define('RideOffer', {
   rating: { type: DataTypes.FLOAT, defaultValue: 5.0 }
 });
 
-sequelize.sync({ alter: true }).then(() => console.log("Rideschat DB Synced"));
+// Don't sync here - we sync in index.js to avoid double sync
+// sequelize.sync({ alter: true })
+
+// Keep original Sequelize create methods
+const originalRideRequestCreate = RideRequest.create.bind(RideRequest);
+const originalRideOfferCreate = RideOffer.create.bind(RideOffer);
 
 User.getOrCreate = async (phone) => {
   let [user] = await User.findOrCreate({ where: { phone } });
@@ -64,35 +69,46 @@ User.prototype.addRating = async function(stars) {
   this.rating = (total + stars) / this.ratingCount;
   await this.save();
 };
-User.getOnlineNearby = async () => {
-  return await User.findAll({ where: { isOnline: true, onlineUntil: { [Op.gt]: new Date() } } });
+User.getOnlineNearby = async (loc) => {
+  return await User.findAll({
+    where: { isOnline: true, onlineUntil: { [Op.gt]: new Date() } }
+  });
 };
 
+// FIXED: use original create inside
 RideRequest.createRide = async (phone, ai) => {
-  return await RideRequest.create({
+  return await originalRideRequestCreate({
     phone, from: ai.from, to: ai.to, date: ai.date, time: ai.time,
     seats: ai.seats || 1, bags: ai.bags || 0,
     girls_only: ai.girls_only || false, pool_allowed: ai.pool_allowed!== false
   });
 };
-RideRequest.create = RideRequest.createRide;
-RideRequest.getNearby = async () => {
+
+// FIXED: don't override Sequelize's native create, create a wrapper method
+RideRequest.createCustom = RideRequest.createRide;
+
+RideRequest.getNearby = async (loc) => {
   return await RideRequest.findAll({ where: { status: 'OPEN' }, order: [['createdAt','DESC']], limit: 10 });
 };
 RideRequest.getMatchingRiders = async (offer) => {
   return await RideRequest.findAll({ where: { status: 'OPEN', from: offer.from, to: offer.to, date: offer.date }, limit: 10 });
 };
+RideRequest.findById = async (id) => {
+  return await RideRequest.findByPk(id);
+};
 RideRequest.prototype.updateStatus = async function(s) { this.status = s; await this.save(); };
 
 RideOffer.createOffer = async (phone, ai) => {
   const user = await User.findByPk(phone);
-  return await RideOffer.create({
+  return await originalRideOfferCreate({
     phone, from: ai.from, to: ai.to, date: ai.date, time: ai.time,
     seats: ai.seats || 3, price: 30, rating: user? user.rating : 5.0
   });
 };
-RideOffer.create = RideOffer.createOffer;
+RideOffer.createCustom = RideOffer.createOffer;
+
 RideOffer.perfectMatch = async (req) => {
+  if (!req ||!req.from) return [];
   return await RideOffer.findAll({ where: { from: req.from, to: req.to, date: req.date }, limit: 10 });
 };
 
