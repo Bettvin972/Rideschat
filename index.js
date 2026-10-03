@@ -30,9 +30,12 @@ function getRealDate(aiDate) {
 const AI_PROMPT = `
 You are Rideschat parser. Current: {TODAY_INFO} [{TODAY_DATE}].
 Understand user messages in English, Telugu script, or transliterated Telugu (Telish). Always translate location names, days, and intents into English JSON output.
-Return JSON only: {"role":"rider|driver|command","command":"ONLINE|OFFLINE|SHOW_REQUESTS|TAKE|RATING|null","takeId":number|null,"from":"string or null","to":"string or null","date":"YYYY-MM-DD or null","time":"HH:MM or null","seats":number|null,"bags":number,"girls_only":bool,"pool_allowed":bool,"rating":number|null}
-Rules: tomorrow = {TOMORROW_DATE}. girls only if says girls only/ladies only/అమ్మాయిలు మాత్రమే. TAKE 1/TAKE 2 -> command TAKE.
+Return JSON only: {"role":"rider|driver|command|greeting","command":"ONLINE|OFFLINE|SHOW_REQUESTS|TAKE|RATING|null","takeId":number|null,"from":"string or null","to":"string or null","date":"YYYY-MM-DD or null","time":"HH:MM or null","seats":number|null,"bags":number,"girls_only":bool,"pool_allowed":bool,"rating":number|null}
+Rules:
+- If the message is a greeting like "Hi", "Hello", "Hey", or lacks any ride/driver details, set "role": "greeting".
+- tomorrow = {TOMORROW_DATE}. girls only if says girls only/ladies only/అమ్మాయిలు మాత్రమే. TAKE 1/TAKE 2 -> command TAKE.
 Examples:
+- "Hi" -> greeting
 - "Need ride Denton to Dallas tmrw 5pm" -> rider
 - "రేపు సాయంత్రం 5 గంటలకి డెంటన్ నుండి డల్లాస్ కి రైడ్ కావాలి" -> rider (from: "Denton", to: "Dallas")
 - "Denton nundi Dallas ki ride kavali tmrw 5pm" -> rider
@@ -49,10 +52,8 @@ async function parseWithAI(msg) {
     tomorrow.setDate(now.getDate() + 1)
     const todayInfo = now.toLocaleDateString('en-US', { weekday: 'long' }) + " " + now.toISOString().split('T')[0]
     const prompt = AI_PROMPT.replaceAll("{TODAY_INFO}", todayInfo).replaceAll("{TODAY_DATE}", now.toISOString().split('T')[0]).replaceAll("{TOMORROW_DATE}", tomorrow.toISOString().split('T')[0]).replace("{MSG}", msg)
-
     const apiKey = process.env.GEMINI_API_KEY
     if (!apiKey) throw new Error("GEMINI_API_KEY missing")
-
     const models = ["gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-3.7-flash"]
     for (let modelName of models) {
         try {
@@ -134,13 +135,10 @@ app.post('/webhook', async (req, res) => {
         const user = await User.getOrCreate(phone)
         const ai = await parseWithAI(text)
         console.log(`[${phone}] Text: "${text}" -> AI:`, ai)
-
-        // FIX: Handle Hi/Hello greetings
-        if (!ai.from &&!ai.to && ai.role === 'rider' &&!ai.date) {
+        if (ai.role === 'greeting' || (!ai.from &&!ai.to && (!ai.command || ai.command === 'null'))) {
             await sendGupshupMessage(phone, `👋 Welcome to Rideschat!\n\nSend like:\n• Need ride Denton to Dallas tomorrow 5pm\n• Driver ON near UNT\n• TAKE 1\n• 5 stars to rate`)
             return
         }
-
         if (ai.role === 'command') {
             if (ai.command === 'ONLINE') {
                 await user.setOnline(ai.from || "Denton", 2)
