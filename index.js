@@ -43,7 +43,6 @@ Message: "{MSG}"
 JSON only.
 `;
 
-// FIXED: fallback models to avoid 503 + 404
 async function parseWithAI(msg) {
     const now = new Date()
     const tomorrow = new Date()
@@ -54,7 +53,7 @@ async function parseWithAI(msg) {
     const apiKey = process.env.GEMINI_API_KEY
     if (!apiKey) throw new Error("GEMINI_API_KEY missing")
 
-    const models = ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-3.5-flash-lite", "gemini-3.8-flash"]
+    const models = ["gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-3.7-flash"]
     for (let modelName of models) {
         try {
             console.log(`Trying ${modelName}`)
@@ -135,6 +134,13 @@ app.post('/webhook', async (req, res) => {
         const user = await User.getOrCreate(phone)
         const ai = await parseWithAI(text)
         console.log(`[${phone}] Text: "${text}" -> AI:`, ai)
+
+        // FIX: Handle Hi/Hello greetings
+        if (!ai.from &&!ai.to && ai.role === 'rider' &&!ai.date) {
+            await sendGupshupMessage(phone, `👋 Welcome to Rideschat!\n\nSend like:\n• Need ride Denton to Dallas tomorrow 5pm\n• Driver ON near UNT\n• TAKE 1\n• 5 stars to rate`)
+            return
+        }
+
         if (ai.role === 'command') {
             if (ai.command === 'ONLINE') {
                 await user.setOnline(ai.from || "Denton", 2)
