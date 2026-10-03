@@ -2,6 +2,7 @@ require('dotenv').config()
 const express = require('express')
 const axios = require('axios')
 const fs = require('fs')
+const path = require('path')
 const { sequelize, User, RideRequest, RideOffer } = require('./database')
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys')
 const qrcode = require('qrcode-terminal')
@@ -15,13 +16,19 @@ sequelize.sync({ alter: true }).then(function(){ console.log("DB Synced") }).cat
 let sock = null
 let qrLast = null
 
+// FIXED PATH - matches your disk mount on Render
+const AUTH_PATH = path.join(__dirname, 'auth_info')
+
 async function startWhatsApp() {
-    if(!fs.existsSync('auth_info')) fs.mkdirSync('auth_info')
-    const { state, saveCreds } = await useMultiFileAuthState('auth_info')
+    if(!fs.existsSync(AUTH_PATH)) fs.mkdirSync(AUTH_PATH, { recursive: true })
+    const { state, saveCreds } = await useMultiFileAuthState(AUTH_PATH)
     sock = makeWASocket({
         auth: state,
         printQRInTerminal: false,
-        browser: ["Rideschat", "Chrome", "1.0"]
+        browser: ["Rideschat", "Chrome", "1.0"],
+        // This prevents crash on Bad MAC
+        shouldIgnoreJid: jid => jid.includes('@lid') || jid === 'status@broadcast',
+        getMessage: async () => undefined
     })
     sock.ev.on('creds.update', saveCreds)
     sock.ev.on('connection.update', async (update) => {
@@ -34,20 +41,69 @@ async function startWhatsApp() {
         if(connection === 'open') { console.log('✅ WhatsApp Connected!'); qrLast = null }
         if(connection === 'close') {
             const shouldReconnect = lastDisconnect?.error?.output?.statusCode!== DisconnectReason.loggedOut
+            console.log('Connection closed, reconnecting:', shouldReconnect)
             if(shouldReconnect) setTimeout(startWhatsApp, 3000)
         }
     })
+
+    // FIXED MESSAGE HANDLER
     sock.ev.on('messages.upsert', async ({ messages }) => {
-        const msg = messages[0]
-        if(!msg.message || msg.key.fromMe) return
-        const phone = msg.key.remoteJid.replace('@s.whatsapp.net','').replace('@c.us','')
-        const text = msg.message.conversation || msg.message.extendedTextMessage?.text || msg.message.imageMessage?.caption || ""
-        if(!text) return
-        console.log(`MSG [${phone}]: ${text}`)
-        handleRideLogic(phone.trim(), text)
+        try {
+            if (!messages ||!messages[0]) return
+            const msg = messages[0]
+
+            // 1. Ignore if no message content
+            if(!msg.message) return
+
+            // 2. Ignore own messages
+            if(msg.key.fromMe) return
+
+            // 3. Ignore LID and status - THIS FIXES YOUR Bad MAC ERROR
+            const remoteJid = msg.key.remoteJid || ""
+            if (remoteJid.includes('@lid') || remoteJid === 'status@broadcast' || remoteJid.includes('@g.us')) return
+
+            // 4. Ignore Baileys protocol messages
+            if (msg.message.protocolMessage) return
+
+            const phone = remoteJid.replace('@s.whatsapp.net','').replace('@c.us','')
+            const text = msg.message.conversation || msg.message.extendedTextMessage?.text || msg.message.imageMessage?.caption || ""
+            if(!text) return
+
+            console.log(`MSG [${phone}]: ${text}`)
+            await handleRideLogic(phone.trim(), text)
+
+        } catch (e) {
+            // Never crash on decrypt errors
+            if (e.message && (e.message.includes('Bad MAC') || e.message.includes('SessionError') || e.message.includes('No matching sessions'))) {
+                console.log('Ignored SessionError (WhatsApp LID bug):', e.message)
+                return
+            }
+            console.error('messages.upsert error:', e.message)
+        }
     })
+
+    // Ignore all session errors globally
+    sock.ev.on('creds.update', saveCreds)
 }
+
 startWhatsApp()
+
+// Prevent whole process crash on unhandled SessionError
+process.on('uncaughtException', (err) => {
+    if (err.message && (err.message.includes('Bad MAC') || err.message.includes('SessionError'))) {
+        console.log('Ignored uncaught SessionError:', err.message)
+        return
+    }
+    console.error('Uncaught Exception:', err)
+})
+process.on('unhandledRejection', (reason) => {
+    const msg = reason?.message || String(reason)
+    if (msg.includes('Bad MAC') || msg.includes('SessionError') || msg.includes('No matching sessions')) {
+        console.log('Ignored unhandled SessionError:', msg)
+        return
+    }
+    console.error('Unhandled Rejection:', reason)
+})
 
 function getRealDate(aiDate) {
     const now = new Date()
@@ -85,11 +141,10 @@ async function parseWithAI(msg) {
     }
 }
 
-// SAME NAME SO YOU DON'T CHANGE OTHER CODE - BUT NOW USES BAILEYS
 async function sendGupshupMessage(toPhone, messageText) {
     if (!toPhone ||!sock) return;
     try {
-        let jid = toPhone.replace('@s.whatsapp.net', '').replace('+', '').trim();
+        let jid = toPhone.replace('@s.whatsapp.net', '').replace('+', '').replace('@lid','').trim();
         if(!jid.includes('@')) jid = jid + '@s.whatsapp.net'
         await sock.sendMessage(jid, { text: messageText })
         console.log('Sent to ' + toPhone)
@@ -116,66 +171,3 @@ async function handleRideLogic(phone, text) {
         var ai = await parseWithAI(text)
         console.log("[" + phone + "] -> AI: " + JSON.stringify(ai))
         if (ai.role === 'greeting' || (!ai.from &&!ai.to && (!ai.command || ai.command === 'null' || ai.command === null))) {
-            await sendGupshupMessage(phone, "Welcome to Rideschat!\n\nSend like:\n- Need ride Denton to Dallas tomorrow 5pm\n- Driver ON near UNT\n- TAKE 1\n- 5 stars to rate")
-            return
-        }
-        if (ai.role === 'rider' && (!ai.from ||!ai.to)) {
-            await sendGupshupMessage(phone, "Where to where? Send like: Need ride Denton to Dallas tomorrow 5pm")
-            return
-        }
-        if (ai.role === 'command') {
-            if (ai.command === 'ONLINE') {
-                await user.setOnline(ai.from || "Denton", 2)
-                var nearby = await RideRequest.getNearby(user.location)
-                await sendGupshupMessage(phone, "Rideschat: ONLINE 2hrs near " + user.location + " on " + (ai.date || 'today') + "\nRating: " + user.rating.toFixed(1) + " star\n" + formatRequests(nearby) + "\nType TAKE <id> to claim")
-            }
-            if (ai.command === 'OFFLINE') { await user.setOffline(); await sendGupshupMessage(phone, "Rideschat: OFFLINE. No more pings.") }
-            if (ai.command === 'SHOW_REQUESTS') { var nearby2 = await RideRequest.getNearby("Denton"); await sendGupshupMessage(phone, formatRequests(nearby2)) }
-            if (ai.command === 'TAKE') {
-                var ride = await RideRequest.findById(ai.takeId)
-                if (ride) {
-                    await ride.updateStatus("TAKEN")
-                    await sendGupshupMessage(phone, "You claimed ride " + ride.id + ". Rider wa.me/" + ride.phone)
-                    await sendGupshupMessage(ride.phone, "Driver on way! " + user.phone + " " + user.rating.toFixed(1) + " star wa.me/" + phone)
-                } else { await sendGupshupMessage(phone, "Ride ID " + ai.takeId + " not found") }
-            }
-            if (ai.command === 'RATING') { await user.addRating(ai.rating); await sendGupshupMessage(phone, "Thanks! Rated " + ai.rating + " star") }
-            return
-        }
-        if (ai.role === 'rider') {
-            var rideReq = await RideRequest.createCustom(phone, ai)
-            var matches = await RideOffer.perfectMatch(rideReq)
-            if (matches && matches.length > 0) {
-                await sendGupshupMessage(phone, "Rideschat: Found " + matches.length + " for " + rideReq.date + " " + (rideReq.time || '') + "\n" + formatOffers(matches))
-            } else {
-                await sendGupshupMessage(phone, "Rideschat: No exact match for " + rideReq.date + " " + (rideReq.time || '') + ". Queued. Will notify drivers.")
-                var drivers = await User.getOnlineNearby(rideReq.from)
-                for (var j=0;j<drivers.length;j++) {
-                    await sendGupshupMessage(drivers[j].phone, "Near you! " + rideReq.from + "->" + rideReq.to + " " + rideReq.date + " Bags:" + rideReq.bags + " TAKE " + rideReq.id)
-                }
-            }
-            return
-        }
-        if (ai.role === 'driver') {
-            var offer = await RideOffer.createCustom(phone, ai)
-            var riders = await RideRequest.getMatchingRiders(offer)
-            if (riders.length > 0) {
-                await sendGupshupMessage(phone, "Rideschat: " + riders.length + " riders need " + offer.date + "!\n" + formatRequests(riders))
-            } else {
-                await sendGupshupMessage(phone, "Offer posted: " + offer.from + "->" + offer.to + " " + offer.date + " " + (offer.time || ''))
-            }
-        }
-    } catch (err) { console.error('Error:', err.stack || err.message) }
-}
-
-// Routes
-app.get('/qr', function(req, res){
-    if(!qrLast) return res.send("<h1 style='font-family:sans-serif'>✅ Connected or waiting... check / logs</h1>")
-    var qrImage = "https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=" + encodeURIComponent(qrLast)
-    res.send("<h1>Scan with Safaricom line</h1><p>WhatsApp > Linked Devices > Link a Device</p><img src='"+qrImage+"'/><p>Refresh after 20 sec</p>")
-})
-app.post('/webhook', function(req,res){ res.send('OK') }) // not needed anymore
-app.get('/ping', function(req, res){ res.send("Rideschat Alive") })
-app.get('/', function(req, res){ res.send("Rideschat LIVE - Baileys Mode. Go to /qr") })
-var PORT = process.env.PORT || 10000
-app.listen(PORT, function(){ console.log("Rideschat running on port " + PORT) })
