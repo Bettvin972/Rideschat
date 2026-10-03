@@ -17,6 +17,20 @@ let sock = null;
 let qrLast = null;
 const AUTH_PATH = path.join(__dirname, 'auth_info');
 
+// In-memory session store for pending conversation context per user
+const userSessions = {};
+
+function getSession(phone) {
+    if (!userSessions[phone]) {
+        userSessions[phone] = { draft: {}, lastUpdated: Date.now() };
+    }
+    return userSessions[phone];
+}
+
+function clearSession(phone) {
+    delete userSessions[phone];
+}
+
 // Helper to convert standard text into Unicode Sans-Bold
 function toBoldSans(text) {
     const sansBoldMap = {
@@ -131,7 +145,7 @@ process.on('unhandledRejection', (reason) => {
 
 function getRealDate(aiDate) {
     const now = new Date();
-    if (!aiDate || aiDate.toLowerCase() === 'today' || aiDate === 'null') return now.toISOString().split('T')[0];
+    if (!aiDate || aiDate.toLowerCase() === 'today' || aiDate.toLowerCase() === 'now' || aiDate === 'null') return now.toISOString().split('T')[0];
     if (aiDate.toLowerCase() === 'tomorrow') {
         var t = new Date();
         t.setDate(now.getDate() + 1);
@@ -158,9 +172,20 @@ function cleanContactNumber(jid) {
     return cleanNum ? `https://wa.me/${cleanNum}` : "📱 *Direct Connection via Bot*";
 }
 
-var AI_PROMPT = 'You are Rideschat Kenya assistant. Current: {TODAY_INFO} [{TODAY_DATE}]. Return strictly JSON: {"role":"rider|driver|command|chat","command":"ONLINE|OFFLINE|SHOW_REQUESTS|TAKE|RATING|null","takeId":number|null,"from":"string or null","to":"string or null","date":"YYYY-MM-DD or null","time":"HH:MM or null","seats":number|null,"bags":number,"girls_only":bool,"pool_allowed":bool,"rating":number|null,"reply":"string or null"} RULES: 1. If text is like "TAKE 7", "TAKE 1" -> role MUST be "command", command MUST be "TAKE", takeId MUST be number. 2. If text is "ONLINE" -> role MUST be "command", command "ONLINE". 3. If text is conversational, set role to "chat". Message: "{MSG}"';
+var AI_PROMPT = `You are Rideschat Kenya assistant. Current: {TODAY_INFO} [{TODAY_DATE}]. 
+Previous context draft state: {CONTEXT_DRAFT}
 
-async function parseWithAI(msg) {
+Extract ride intent from user message and merge with context state.
+Return strictly JSON: 
+{"role":"rider|driver|command|chat","command":"ONLINE|OFFLINE|SHOW_REQUESTS|TAKE|RATING|null","takeId":number|null,"from":"string or null","to":"string or null","date":"YYYY-MM-DD or null","time":"HH:MM or string or null","seats":number|null,"bags":number,"girls_only":bool,"pool_allowed":bool,"rating":number|null,"reply":"string or null"} 
+
+RULES: 
+1. If text is like "TAKE 7", "TAKE 1" -> role MUST be "command", command MUST be "TAKE", takeId MUST be number. 
+2. If user mentions "now", "immediately", or a time like "3:30 PM", extract it into "time".
+3. Preserve existing non-null fields from CONTEXT_DRAFT unless user updates them.
+Message: "{MSG}"`;
+
+async function parseWithAI(msg, contextDraft = {}) {
     var now = new Date();
     var tomorrow = new Date();
     tomorrow.setDate(now.getDate() + 1);
@@ -168,6 +193,7 @@ async function parseWithAI(msg) {
     var prompt = AI_PROMPT.replaceAll("{TODAY_INFO}", todayInfo)
                            .replaceAll("{TODAY_DATE}", now.toISOString().split('T')[0])
                            .replaceAll("{TOMORROW_DATE}", tomorrow.toISOString().split('T')[0])
+                           .replace("{CONTEXT_DRAFT}", JSON.stringify(contextDraft))
                            .replace("{MSG}", msg);
 
     var apiKey = process.env.GEMINI_API_KEY;
@@ -231,6 +257,7 @@ function formatOffers(offers) {
 async function handleRideLogic(phoneJid, text, realPhone) {
     try {
         const lowerText = text.toLowerCase().trim();
+        const userPhoneKey = realPhone || phoneJid;
         
         const acknowledgements = ['okay', 'ok', 'cool', 'thanks', 'asante', 'got it', 'sure', 'alright', 'thx', '👍'];
         if (acknowledgements.includes(lowerText)) {
@@ -239,8 +266,21 @@ async function handleRideLogic(phoneJid, text, realPhone) {
 
         const takeMatch = lowerText.match(/^take\s*(\d+)$/i);
 
-        var user = await User.getOrCreate(realPhone || phoneJid);
-        var ai = await parseWithAI(text);
+        var user = await User.getOrCreate(userPhoneKey);
+        var session = getSession(userPhoneKey);
+
+        var ai = await parseWithAI(text, session.draft);
+
+        // Merge AI output back into session draft to keep context alive
+        session.draft = {
+            role: ai.role || session.draft.role || 'rider',
+            from: ai.from || session.draft.from || null,
+            to: ai.to || session.draft.to || null,
+            date: ai.date || session.draft.date || null,
+            time: ai.time || session.draft.time || null,
+            bags: ai.bags ?? session.draft.bags ?? 0,
+            girls_only: ai.girls_only ?? session.draft.girls_only ?? false
+        };
 
         if (takeMatch) {
             ai.role = 'command';
@@ -248,31 +288,13 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             ai.takeId = parseInt(takeMatch[1], 10);
         }
 
-        console.log("[" + phoneJid + "] -> AI: " + JSON.stringify(ai));
-
-        if (ai.role === 'chat' || ai.role === 'greeting' || (!ai.from && !ai.to && (!ai.command || ai.command === 'null' || ai.command === null))) {
-            var chatReply = ai.reply || `✨ ${toBoldSans("WELCOME TO RIDESCHAT KENYA")} 🇰🇪\n\nHow to interact:\n\n🚙 *RIDER:* \`Need ride Juja to Nairobi tomorrow 5pm\`\n🚘 *DRIVER:* \`ONLINE near Juja\`\n✅ *ACCEPT:* \`TAKE <id>\``;
-            await sendGupshupMessage(phoneJid, chatReply);
-            return;
-        }
-
-        // Prompt user if pickup/dropoff points are missing
-        if (ai.role === 'rider' && (!ai.from || !ai.to)) {
-            await sendGupshupMessage(phoneJid, `📍 ${toBoldSans("WHERE ARE YOU TRAVELING?")}\n\nPlease specify both your origin and destination.\n\nExample: \`Need ride Juja to Thika tomorrow at 5pm\``);
-            return;
-        }
-
-        // Prompt user if departure time is missing
-        if (ai.role === 'rider' && !ai.time) {
-            await sendGupshupMessage(phoneJid, `⏰ ${toBoldSans("WHAT TIME ARE YOU LEAVING?")}\n\nPlease include your preferred travel time.\n\nExample: \`Leaving ${ai.from} to ${ai.to} at 3:30 PM\``);
-            return;
-        }
+        console.log("[" + phoneJid + "] -> Merged Draft: " + JSON.stringify(session.draft));
 
         if (ai.role === 'command') {
             if (ai.command === 'ONLINE') {
                 await user.setOnline(ai.from || "Juja", 2);
                 var nearby = await RideRequest.getNearby(user.location);
-                await sendGupshupMessage(phoneJid, `🟢 ${toBoldSans("DRIVER STATUS: ONLINE")}\n📍 *Location:* Near ${user.location}\n⭐ *Rating:* ${user.rating.toFixed(1)} / 5.0\n\n${toBoldSans("AVAILABLE RIDES NEAR YOU:")}\n\n${formatRequests(nearby)}`);
+                await sendGupshupMessage(phoneJid, `🟢 ${toBoldSans("DRIVER STATUS: ONLINE")}\n📍 *Location:* Near ${user.location}\n⭐ *Rating:*${user.rating.toFixed(1)} / 5.0\n\n${toBoldSans("AVAILABLE RIDES NEAR YOU:")}\n\n${formatRequests(nearby)}`);
             }
             if (ai.command === 'OFFLINE') {
                 await user.setOffline();
@@ -288,14 +310,14 @@ async function handleRideLogic(phoneJid, text, realPhone) {
                     await ride.updateStatus("TAKEN");
                     
                     const riderContactStr = cleanContactNumber(ride.phone);
-                    const driverContactStr = cleanContactNumber(realPhone || phoneJid);
+                    const driverContactStr = cleanContactNumber(userPhoneKey);
                     var timeStr = ride.time ? ride.time : 'Flexible';
 
                     // Notify Driver
-                    await sendGupshupMessage(phoneJid, `🎉 ${toBoldSans("TRIP MATCHED SUCCESSFULLY!")}\n\n📍 *Route:* ${ride.from} ➔ ${ride.to}\n📅 *When:* \`${ride.date || 'Today'}\` at \`${timeStr}\`\n\n👤 *Rider Contact:* ${riderContactStr}\n\n_We have notified the rider with your details!_`);
+                    await sendGupshupMessage(phoneJid, `🎉 ${toBoldSans("TRIP MATCHED SUCCESSFULLY!")}\n\n📍 *Route:* ${ride.from} ➔${ride.to}\n📅 *When:* \`${ride.date || 'Today'}\` at \`${timeStr}\`\n\n👤 *Rider Contact:* ${riderContactStr}\n\n_We have notified the rider with your details!_`);
                     
                     // Notify Rider
-                    await sendGupshupMessage(ride.phone, `🚘 ${toBoldSans("DRIVER ASSIGNED TO YOUR RIDE!")}\n\nYour trip from *${ride.from}* to *${ride.to}* has been accepted.\n\n⭐ *Driver Rating:* ${user.rating.toFixed(1)}\n📱 *Driver Contact:* ${driverContactStr}\n\n_Please contact your driver directly._`);
+                    await sendGupshupMessage(ride.phone, `🚘 ${toBoldSans("DRIVER ASSIGNED TO YOUR RIDE!")}\n\nYour trip from *${ride.from}* to *${ride.to}* has been accepted.\n\n⭐ *Driver Rating:*${user.rating.toFixed(1)}\n📱 *Driver Contact:* ${driverContactStr}\n\n_Please contact your driver directly._`);
                 } else {
                     await sendGupshupMessage(phoneJid, `❌ *Ride #${ai.takeId}* was not found or has already been taken by another driver.`);
                 }
@@ -307,8 +329,20 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             return;
         }
 
-        if (ai.role === 'rider') {
-            var rideReq = await RideRequest.createCustom(realPhone || phoneJid, ai);
+        // Prompt user if pickup/dropoff points are missing
+        if (session.draft.role === 'rider' && (!session.draft.from || !session.draft.to)) {
+            await sendGupshupMessage(phoneJid, `📍 ${toBoldSans("WHERE ARE YOU TRAVELING?")}\n\nPlease specify both your origin and destination.\n\nExample: \`Need ride Juja to Thika\``);
+            return;
+        }
+
+        // Prompt user if departure time is missing
+        if (session.draft.role === 'rider' && !session.draft.time) {
+            await sendGupshupMessage(phoneJid, `⏰ ${toBoldSans("WHAT TIME ARE YOU LEAVING?")}\n\nPlease include your preferred travel time.\n\nExample: \`Leaving at 3:30 PM\` or \`Now\``);
+            return;
+        }
+
+        if (session.draft.role === 'rider') {
+            var rideReq = await RideRequest.createCustom(userPhoneKey, session.draft);
             var matches = await RideOffer.perfectMatch(rideReq);
             var displayDate = rideReq.date || 'Today';
             var timeStrReq = rideReq.time ? rideReq.time : 'Flexible';
@@ -320,9 +354,7 @@ async function handleRideLogic(phoneJid, text, realPhone) {
                 
                 var drivers = await User.getOnlineNearby(rideReq.from);
                 
-                // Exclude the current rider from receiving driver broadcasts
-                var currentRiderJid = realPhone || phoneJid;
-                var currentRiderClean = currentRiderJid.split('@')[0].replace(/[^0-9]/g, '');
+                var currentRiderClean = userPhoneKey.split('@')[0].replace(/[^0-9]/g, '');
                 
                 var filteredDrivers = drivers.filter(d => {
                     var driverClean = (d.phone || '').split('@')[0].replace(/[^0-9]/g, '');
@@ -333,11 +365,14 @@ async function handleRideLogic(phoneJid, text, realPhone) {
                     await sendGupshupMessage(filteredDrivers[j].phone, `🔔 ${toBoldSans("NEW RIDE REQUEST NEAR YOU!")}\n\n📍 *Route:* ${rideReq.from} ➔ ${rideReq.to}\n📅 *When:* \`${displayDate}\` at \`${timeStrReq}\`\n🧳 *Bags:* ${rideReq.bags}\n\n👉 Reply \`TAKE ${rideReq.id}\` to accept!`);
                 }
             }
+
+            // Clear session context once request is successfully finalized
+            clearSession(userPhoneKey);
             return;
         }
 
         if (ai.role === 'driver') {
-            var offer = await RideOffer.createCustom(realPhone || phoneJid, ai);
+            var offer = await RideOffer.createCustom(userPhoneKey, ai);
             var riders = await RideRequest.getMatchingRiders(offer);
             var displayOfferDate = offer.date || 'Today';
             var offerTimeStr = offer.time ? offer.time : 'Flexible';
@@ -347,13 +382,14 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             } else {
                 await sendGupshupMessage(phoneJid, `🚘 ${toBoldSans("OFFER POSTED!")}\n📍 *Route:* ${offer.from} ➔ ${offer.to}\n📅 *Date:* \`${displayOfferDate}\` at \`${offerTimeStr}\`\n\n_We will alert you as soon as a passenger books._`);
             }
+            clearSession(userPhoneKey);
         }
     } catch (err) {
         console.error('Error:', err.stack || err.message);
     }
 }
 
-// Background Cron-like Task: Periodic DB Cleanup Every 15 Minutes
+// Background Cron Task: Periodic DB Cleanup Every 15 Minutes
 setInterval(async () => {
     try {
         if (RideRequest.clearExpired && RideOffer.clearExpired) {
