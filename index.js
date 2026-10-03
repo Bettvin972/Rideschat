@@ -7,6 +7,9 @@ const app = express()
 app.use(express.json())
 app.use(express.urlencoded({ extended: true }))
 
+// FIX 1: Sync DB on startup so tables exist
+sequelize.sync({ alter: true }).then(() => console.log("✅ DB Synced")).catch(e => console.error("DB Sync error:", e.message))
+
 function getRealDate(aiDate) {
     const now = new Date()
     if (!aiDate || aiDate.toLowerCase() === 'today') return now.toISOString().split('T')[0]
@@ -76,7 +79,6 @@ async function parseWithAI(msg) {
     }
 }
 
-// FIXED: Gupshup Authorization Required
 async function sendGupshupMessage(toPhone, messageText) {
     if (!toPhone) return;
     const cleanPhone = toPhone.replace('@s.whatsapp.net', '').replace('+', '').trim();
@@ -87,22 +89,13 @@ async function sendGupshupMessage(toPhone, messageText) {
     params.append('src.name', process.env.GUPSHUP_APP_NAME);
     params.append('message', JSON.stringify({ type: 'text', text: messageText }));
     const apiKey = (process.env.GUPSHUP_API_KEY || process.env.GUPSHUP_APIKEY || '').trim();
-    if (!apiKey) {
-        console.error('GUPSHUP API Key missing!');
-        return;
-    }
+    if (!apiKey) { console.error('GUPSHUP API Key missing!'); return; }
     try {
         const res = await axios.post('https://api.gupshup.io/sm/api/v1/msg', params.toString(), {
-            headers: {
-                'apikey': apiKey,
-                'Authorization': apiKey,
-                'Content-Type': 'application/x-www-form-urlencoded'
-            }
+            headers: { 'apikey': apiKey, 'Authorization': apiKey, 'Content-Type': 'application/x-www-form-urlencoded' }
         });
         console.log('Gupshup sent OK:', res.data?.status || 'submitted');
-    } catch (err) {
-        console.error('Gupshup send error:', err.response?.data || err.message);
-    }
+    } catch (err) { console.error('Gupshup send error:', err.response?.data || err.message) }
 }
 
 function formatRequests(reqs) {
@@ -147,50 +140,6 @@ app.post('/webhook', async (req, res) => {
         const user = await User.getOrCreate(phone)
         const ai = await parseWithAI(text)
         console.log(`[${phone}] Text: "${text}" -> AI:`, ai)
-        if (ai.role === 'greeting' || (!ai.from &&!ai.to && (!ai.command || ai.command === 'null' || ai.command === null))) {
-            await sendGupshupMessage(phone, `👋 Welcome to Rideschat!\n\nSend like:\n• Need ride Denton to Dallas tomorrow 5pm\n• Driver ON near UNT\n• TAKE 1\n• 5 stars to rate`)
-            return
-        }
-        if (ai.role === 'command') {
-            if (ai.command === 'ONLINE') {
-                await user.setOnline(ai.from || "Denton", 2)
-                const nearby = await RideRequest.getNearby(user.location)
-                await sendGupshupMessage(phone, `✅ Rideschat: ONLINE 2hrs near ${user.location} on ${ai.date || 'today'}\nRating: ${user.rating.toFixed(1)}⭐\n${formatRequests(nearby)}\nType TAKE <id> to claim`)
-            }
-            if (ai.command === 'OFFLINE') { await user.setOffline(); await sendGupshupMessage(phone, "Rideschat: OFFLINE. No more pings.") }
-            if (ai.command === 'SHOW_REQUESTS') { const nearby = await RideRequest.getNearby("Denton"); await sendGupshupMessage(phone, formatRequests(nearby)) }
-            if (ai.command === 'TAKE') {
-                const req = await RideRequest.findById(ai.takeId)
-                if (req) {
-                    await req.updateStatus("TAKEN")
-                    await sendGupshupMessage(phone, `You claimed ride ${req.id}. Rider wa.me/${req.phone}\nAfter ride, ask rider to rate: '5 stars'`)
-                    await sendGupshupMessage(req.phone, `Driver on way! ${user.phone} ${user.rating.toFixed(1)}⭐ wa.me/${phone}`)
-                } else { await sendGupshupMessage(phone, `Ride ID ${ai.takeId} not found or already taken.`) }
-            }
-            if (ai.command === 'RATING') { await user.addRating(ai.rating); await sendGupshupMessage(phone, `Thanks! Rated ${ai.rating}⭐ on Rideschat`) }
-            return
-        }
-        if (ai.role === 'rider') {
-            const req = await RideRequest.create(phone, ai)
-            const matches = await RideOffer.perfectMatch(req)
-            if (matches.length > 0) { await sendGupshupMessage(phone, `✅ Rideschat: Found ${matches.length} for ${req.date} ${req.time || ''}\n${formatOffers(matches)}\nReply 1 to connect`) }
-            else {
-                await sendGupshupMessage(phone, `⏳ Rideschat: No exact match for ${req.date} ${req.time || ''}. Queued.\nWill notify + ping ONLINE drivers.`)
-                const drivers = await User.getOnlineNearby(req.from || "Denton")
-                for (let d of drivers) { await sendGupshupMessage(d.phone, `🔔 Rideschat Near you! ${req.from}->${req.to} ${req.date} ${req.time || ''} Bags:${req.bags} ${req.girls_only? 'GIRLS ONLY' : ''}\nTAKE ${req.id}`) }
-            }
-            return
-        }
-        if (ai.role === 'driver') {
-            const offer = await RideOffer.create(phone, ai)
-            const riders = await RideRequest.getMatchingRiders(offer)
-            if (riders.length > 0) { await sendGupshupMessage(phone, `🔥 Rideschat: ${riders.length} riders need ${offer.date}!\n${formatRequests(riders)}`) }
-            else { await sendGupshupMessage(phone, `Rideschat Offer posted: ${offer.from}->${offer.to} ${offer.date} ${offer.time || ''} ${offer.seats} seats $${offer.price} (${offer.rating}⭐)`) }
-        }
-    } catch (err) { console.error('Error handling webhook:', err.response?.data || err.message) }
-})
 
-app.get('/ping', (req, res) => res.send("Rideschat Alive"))
-app.get('/', (req, res) => res.send("Rideschat LIVE"))
-const PORT = process.env.PORT || 10000
-app.listen(PORT, () => console.log(`Rideschat running on port ${PORT}`))
+        if (ai.role === 'greeting' || (!ai.from &&!ai.to && (!ai.command || ai.command === 'null' || ai.command === null))) {
+            await sendGupshupMessage(phone, `👋 Welcome to Rides
