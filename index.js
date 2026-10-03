@@ -21,7 +21,6 @@ async function startWhatsApp() {
     if (!fs.existsSync(AUTH_PATH)) fs.mkdirSync(AUTH_PATH, { recursive: true });
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_PATH);
 
-    // Dynamically fetch latest supported WhatsApp version to prevent version disconnects
     const { version, isLatest } = await fetchLatestBaileysVersion();
     console.log(`Starting WA with version v${version.join('.')} (isLatest: ${isLatest})...`);
 
@@ -60,7 +59,6 @@ async function startWhatsApp() {
             qrLast = null;
             sock = null;
 
-            // Clear session if logged out or token invalidated (code 401) to break infinite restart loops
             if (statusCode === DisconnectReason.loggedOut || statusCode === 401) {
                 console.log('Session invalidated or logged out. Clearing auth_info directory...');
                 if (fs.existsSync(AUTH_PATH)) {
@@ -145,7 +143,8 @@ async function parseWithAI(msg) {
     var apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) throw new Error("GEMINI_API_KEY missing");
 
-    var models = ["gemini-1.5-flash", "gemini-1.5-pro"];
+    // Supported Gemini endpoints
+    var models = ["gemini-2.5-flash", "gemini-1.5-flash-latest"];
 
     for (var i = 0; i < models.length; i++) {
         try {
