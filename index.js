@@ -1,17 +1,9 @@
 require('dotenv').config()
 const express = require('express')
 const axios = require('axios')
-const { OpenAI } = require('openai')
 const { sequelize, User, RideRequest, RideOffer } = require('./database')
 
-// --- GEMINI FIX: Uses Gemini free key with OpenAI compatible URL ---
-const openai = new OpenAI({
-  apiKey: process.env.GEMINI_API_KEY || process.env.GEMINI_KEY || process.env.OPENAI_API_KEY || process.env.OPENAI_KEY,
-  baseURL: "https://generativelanguage.googleapis.com/v1beta/openai/"
-})
-
 const app = express()
-
 app.use(express.json())
 app.use(express.urlencoded({ extended: true }))
 
@@ -51,14 +43,23 @@ Message: "{MSG}"
 JSON only.
 `;
 
+// FIXED: Now uses Gemini FREE API directly
 async function parseWithAI(msg) {
     const now = new Date()
     const tomorrow = new Date()
     tomorrow.setDate(now.getDate() + 1)
     const todayInfo = now.toLocaleDateString('en-US', { weekday: 'long' }) + " " + now.toISOString().split('T')[0]
     const prompt = AI_PROMPT.replaceAll("{TODAY_INFO}", todayInfo).replaceAll("{TODAY_DATE}", now.toISOString().split('T')[0]).replaceAll("{TOMORROW_DATE}", tomorrow.toISOString().split('T')[0]).replace("{MSG}", msg)
-    const res = await openai.chat.completions.create({ model: "gemini-2.0-flash", messages: [{ role: "user", content: prompt }], temperature: 0 })
-    let cleanContent = res.choices[0].message.content.trim()
+
+    const apiKey = process.env.GEMINI_API_KEY
+    if (!apiKey) throw new Error("GEMINI_API_KEY missing")
+
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`
+    const res = await axios.post(url, {
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0 }
+    })
+    let cleanContent = res.data.candidates[0].content.parts[0].text.trim()
     if (cleanContent.startsWith("```")) { cleanContent = cleanContent.replace(/^```(json)?/, '').replace(/```$/, '').trim() }
     let data = JSON.parse(cleanContent)
     if (data.date) data.date = getRealDate(data.date)
@@ -160,11 +161,10 @@ app.post('/webhook', async (req, res) => {
             if (riders.length > 0) { await sendGupshupMessage(phone, `🔥 Rideschat: ${riders.length} riders need ${offer.date}!\n${formatRequests(riders)}`) }
             else { await sendGupshupMessage(phone, `Rideschat Offer posted: ${offer.from}->${offer.to} ${offer.date} ${offer.time || ''} ${offer.seats} seats $${offer.price} (${offer.rating}⭐)`) }
         }
-    } catch (err) { console.error('Error handling webhook:', err) }
+    } catch (err) { console.error('Error handling webhook:', err.response?.data || err.message) }
 })
 
 app.get('/ping', (req, res) => res.send("Rideschat Alive"))
 app.get('/', (req, res) => res.send("Rideschat LIVE"))
-
 const PORT = process.env.PORT || 10000
 app.listen(PORT, () => console.log(`Rideschat running on port ${PORT}`))
