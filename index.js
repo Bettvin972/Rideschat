@@ -87,20 +87,35 @@ function formatOffers(offers) {
 }
 
 function extractGupshupPayload(body) {
-    if (!body) return null;
-    const payload = body.payload || body;
-    const sender = payload.sender || body.sender;
-    let text = null;
-    if (payload.payload && payload.payload.text) text = payload.payload.text;
-    else if (payload.text) text = payload.text;
-    else if (typeof payload.body === 'string') text = payload.body;
-    const phone = sender?.phone || body.mobile || body.waNumber;
-    if (!phone ||!text) return null;
-    return { phone, text };
-}
+  if (!body) return null;
 
+  // --- NEW: Handle Meta format v3 ---
+  try {
+    if (body.entry && body.entry[0]?.changes?.[0]?.value?.messages?.[0]) {
+      const val = body.entry[0].changes[0].value;
+      const msg = val.messages[0];
+      const phone = msg.from || val.contacts?.[0]?.wa_id;
+      const text = msg.text?.body || msg.button?.text || msg.interactive?.button_reply?.title || null;
+      if (phone && text) return { phone, text };
+    }
+  } catch (e) {}
+
+  // --- OLD: Handle Gupshup format ---
+  const payload = body.payload || body;
+  const sender = payload.sender || body.sender;
+  let text = null;
+  if (payload.payload && payload.payload.text) text = payload.payload.text;
+  else if (payload.text) text = payload.text;
+  else if (typeof payload.body === 'string') text = payload.body;
+  else if (body.text) text = body.text;
+
+  const phone = sender?.phone || body.mobile || body.waNumber || body.from;
+  if (!phone ||!text) return null;
+  return { phone, text };
+}
 app.post('/webhook', async (req, res) => {
     res.status(200).send('OK')
+    console.log('WEBHOOK HIT:', JSON.stringify(req.body).substring(0, 800));
     const extracted = extractGupshupPayload(req.body);
     if (!extracted) return;
     const { phone, text } = extracted;
