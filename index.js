@@ -137,19 +137,33 @@ async function parseWithAI(msg) {
     var tomorrow = new Date();
     tomorrow.setDate(now.getDate() + 1);
     var todayInfo = now.toLocaleDateString('en-US', { weekday: 'long' }) + " " + now.toISOString().split('T')[0];
-    var prompt = AI_PROMPT.replaceAll("{TODAY_INFO}", todayInfo).replaceAll("{TODAY_DATE}", now.toISOString().split('T')[0]).replaceAll("{TOMORROW_DATE}", tomorrow.toISOString().split('T')[0]).replace("{MSG}", msg);
+    var prompt = AI_PROMPT.replaceAll("{TODAY_INFO}", todayInfo)
+                           .replaceAll("{TODAY_DATE}", now.toISOString().split('T')[0])
+                           .replaceAll("{TOMORROW_DATE}", tomorrow.toISOString().split('T')[0])
+                           .replace("{MSG}", msg);
+
     var apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) throw new Error("GEMINI_API_KEY missing");
-    var models = ["gemini-2.0-flash", "gemini-1.5-flash"];
+
+    var models = ["gemini-1.5-flash", "gemini-1.5-pro"];
+
     for (var i = 0; i < models.length; i++) {
         try {
             var url = "https://generativelanguage.googleapis.com/v1beta/models/" + models[i] + ":generateContent?key=" + apiKey;
-            var res = await axios.post(url, { contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0 } });
-            var cleanContent = res.data.candidates[0].content.parts[0].text.trim().replace(/^```(json)?/, '').replace(/```$/, '').trim();
+            var res = await axios.post(url, {
+                contents: [{ parts: [{ text: prompt }] }],
+                generationConfig: {
+                    temperature: 0,
+                    responseMimeType: "application/json"
+                }
+            });
+
+            var cleanContent = res.data.candidates[0].content.parts[0].text.trim();
             var data = JSON.parse(cleanContent);
             if (data.date) data.date = getRealDate(data.date);
             return data;
         } catch (err) {
+            console.error("Gemini API Error details:", err.response ? err.response.data : err.message);
             if (i === models.length - 1) throw err;
         }
     }
