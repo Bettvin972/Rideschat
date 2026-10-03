@@ -37,13 +37,18 @@ async function startWhatsApp() {
         if(qr) {
             qrLast = qr;
             qrcode.generate(qr, {small: true});
-            console.log("SCAN THIS QR");
+            console.log("SCAN THIS QR - Go to /qr");
         }
-        if(connection === 'open') { console.log('WhatsApp Connected!'); qrLast = null; }
+        if(connection === 'open') {
+            console.log('WhatsApp Connected!');
+            qrLast = null;
+        }
         if(connection === 'close') {
-            const shouldReconnect = lastDisconnect?.error?.output?.statusCode!== DisconnectReason.loggedOut;
-            console.log('Closed, reconnect:', shouldReconnect);
-            if(shouldReconnect) setTimeout(startWhatsApp, 3000);
+            // FIXED: Always reconnect, even if loggedOut - forces new QR
+            console.log('Connection closed, restarting in 3s...', lastDisconnect?.error?.message || lastDisconnect?.error || '');
+            qrLast = null;
+            sock = null;
+            setTimeout(startWhatsApp, 3000);
         }
     });
     sock.ev.on('messages.upsert', async ({ messages }) => {
@@ -118,7 +123,6 @@ async function parseWithAI(msg) {
 async function sendGupshupMessage(toJid, messageText) {
     if (!toJid ||!sock) return;
     try {
-        // FIXED: Use JID directly - supports both @lid and @s.whatsapp.net
         let jid = toJid;
         if (!jid.includes('@')) {
             jid = jid.replace('+','').trim() + '@s.whatsapp.net';
@@ -146,6 +150,11 @@ function formatOffers(offers) {
 
 async function handleRideLogic(phoneJid, text) {
     try {
+        // instant reply for hi - bypass AI to prove bot works
+        if (['hi','hello','sasa','niaje','hey'].includes(text.toLowerCase().trim())) {
+            await sendGupshupMessage(phoneJid, "Welcome to Rideschat Kenya!\n\nHow to use:\nRIDER: Need ride Juja to Nairobi tomorrow 5pm\nDRIVER: Driver ON near Juja\nTo accept: TAKE 1\nRate: 5 stars");
+            return;
+        }
         var user = await User.getOrCreate(phoneJid);
         var ai = await parseWithAI(text);
         console.log("[" + phoneJid + "] -> AI: " + JSON.stringify(ai));
