@@ -5,8 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const pino = require('pino');
 const { sequelize, User, RideRequest, RideOffer } = require('./database');
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
-const qrcode = require('qrcode-terminal');
+const { default: makeWASocket, useMultiFileAuthState } = require('@whiskeysockets/baileys');
 
 const app = express();
 app.use(express.json());
@@ -21,7 +20,11 @@ const AUTH_PATH = path.join(__dirname, 'auth_info');
 async function startWhatsApp() {
     if(!fs.existsSync(AUTH_PATH)) fs.mkdirSync(AUTH_PATH, { recursive: true });
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_PATH);
+
+    console.log("Starting WA with version fix [2,3000,1015901307]...");
+
     sock = makeWASocket({
+        version: [2, 3000, 1015901307],
         auth: state,
         logger: pino({ level: 'silent' }),
         printQRInTerminal: false,
@@ -36,16 +39,16 @@ async function startWhatsApp() {
         const { connection, lastDisconnect, qr } = update;
         if(qr) {
             qrLast = qr;
-            qrcode.generate(qr, {small: true});
-            console.log("SCAN THIS QR - Go to /qr");
+            console.log("NEW QR READY - Go to /qr");
         }
         if(connection === 'open') {
             console.log('WhatsApp Connected!');
             qrLast = null;
         }
         if(connection === 'close') {
-            // FIXED: Always reconnect, even if loggedOut - forces new QR
-            console.log('Connection closed, restarting in 3s...', lastDisconnect?.error?.message || lastDisconnect?.error || '');
+            const code = lastDisconnect?.error?.output?.statusCode;
+            const msg = lastDisconnect?.error?.message || '';
+            console.log('Closed, code:', code, 'msg:', msg, '- restarting in 3s...');
             qrLast = null;
             sock = null;
             setTimeout(startWhatsApp, 3000);
@@ -58,7 +61,6 @@ async function startWhatsApp() {
             if (!msg.message) return;
             if (msg.key.fromMe) return;
             const remoteJid = msg.key.remoteJid || "";
-            // FIXED: Allow @lid - new WhatsApp privacy IDs
             if (remoteJid === 'status@broadcast' || remoteJid.includes('@g.us')) return;
             if (msg.message.protocolMessage) return;
             const text = msg.message.conversation || msg.message.extendedTextMessage?.text || msg.message.imageMessage?.caption || "";
@@ -76,12 +78,12 @@ startWhatsApp();
 
 process.on('uncaughtException', (err) => {
     if (err.message && (err.message.includes('Bad MAC') || err.message.includes('SessionError'))) return;
-    console.error('Uncaught:', err);
+    console.error('Uncaught:', err.message);
 });
 process.on('unhandledRejection', (reason) => {
     const msg = reason?.message || String(reason);
     if (msg.includes('Bad MAC') || msg.includes('SessionError') || msg.includes('No matching')) return;
-    console.error('Unhandled:', reason);
+    console.error('Unhandled:', msg);
 });
 
 function getRealDate(aiDate) {
@@ -99,7 +101,7 @@ function getRealDate(aiDate) {
     return aiDate;
 }
 
-var AI_PROMPT = 'You are Rideschat Kenya parser. Current: {TODAY_INFO} [{TODAY_DATE}]. Understand English, Swahili, Sheng. Translate to English JSON. Return JSON only: {"role":"rider|driver|command|greeting","command":"ONLINE|OFFLINE|SHOW_REQUESTS|TAKE|RATING|null","takeId":number|null,"from":"string or null","to":"string or null","date":"YYYY-MM-DD or null","time":"HH:MM or null","seats":number|null,"bags":number,"girls_only":bool,"pool_allowed":bool,"rating":number|null} Rules: If greeting like Hi/Hello/Sasa/Niaje set role greeting. tomorrow = {TOMORROW_DATE}. TAKE 1 -> command TAKE. Examples: Hi -> greeting, Need ride Juja to Nairobi tmrw 5pm -> rider, Need ride Thika to Ruiru tomorrow 8am -> rider, Driver ON near Juja -> command ONLINE, Driver ON near Nairobi CBD -> command ONLINE, TAKE 1 -> command TAKE takeId 1, 5 stars -> command RATING rating 5 Message: "{MSG}" JSON only.';
+var AI_PROMPT = 'You are Rideschat Kenya parser. Current: {TODAY_INFO} [{TODAY_DATE}]. Understand English, Swahili, Sheng. Translate to English JSON. Return JSON only: {"role":"rider|driver|command|greeting","command":"ONLINE|OFFLINE|SHOW_REQUESTS|TAKE|RATING|null","takeId":number|null,"from":"string or null","to":"string or null","date":"YYYY-MM-DD or null","time":"HH:MM or null","seats":number|null,"bags":number,"girls_only":bool,"pool_allowed":bool,"rating":number|null} Rules: If greeting like Hi/Hello/Sasa/Niaje set role greeting. tomorrow = {TOMORROW_DATE}. TAKE 1 -> command TAKE. Examples: Hi -> greeting, Need ride Juja to Nairobi tmrw 5pm -> rider, Driver ON near Juja -> command ONLINE, TAKE 1 -> command TAKE takeId 1, 5 stars -> command RATING rating 5 Message: "{MSG}" JSON only.';
 
 async function parseWithAI(msg) {
     var now = new Date(); var tomorrow = new Date(); tomorrow.setDate(now.getDate() + 1);
@@ -150,7 +152,6 @@ function formatOffers(offers) {
 
 async function handleRideLogic(phoneJid, text) {
     try {
-        // instant reply for hi - bypass AI to prove bot works
         if (['hi','hello','sasa','niaje','hey'].includes(text.toLowerCase().trim())) {
             await sendGupshupMessage(phoneJid, "Welcome to Rideschat Kenya!\n\nHow to use:\nRIDER: Need ride Juja to Nairobi tomorrow 5pm\nDRIVER: Driver ON near Juja\nTo accept: TAKE 1\nRate: 5 stars");
             return;
