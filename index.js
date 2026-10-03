@@ -4,7 +4,12 @@ const axios = require('axios')
 const { OpenAI } = require('openai')
 const { sequelize, User, RideRequest, RideOffer } = require('./database')
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_KEY })
+// --- GEMINI FIX: Uses Gemini free key with OpenAI compatible URL ---
+const openai = new OpenAI({
+  apiKey: process.env.GEMINI_API_KEY || process.env.GEMINI_KEY || process.env.OPENAI_API_KEY || process.env.OPENAI_KEY,
+  baseURL: "https://generativelanguage.googleapis.com/v1beta/openai/"
+})
+
 const app = express()
 
 app.use(express.json())
@@ -52,7 +57,7 @@ async function parseWithAI(msg) {
     tomorrow.setDate(now.getDate() + 1)
     const todayInfo = now.toLocaleDateString('en-US', { weekday: 'long' }) + " " + now.toISOString().split('T')[0]
     const prompt = AI_PROMPT.replaceAll("{TODAY_INFO}", todayInfo).replaceAll("{TODAY_DATE}", now.toISOString().split('T')[0]).replaceAll("{TOMORROW_DATE}", tomorrow.toISOString().split('T')[0]).replace("{MSG}", msg)
-    const res = await openai.chat.completions.create({ model: "gpt-4o-mini", messages: [{ role: "user", content: prompt }], temperature: 0 })
+    const res = await openai.chat.completions.create({ model: "gemini-2.0-flash", messages: [{ role: "user", content: prompt }], temperature: 0 })
     let cleanContent = res.choices[0].message.content.trim()
     if (cleanContent.startsWith("```")) { cleanContent = cleanContent.replace(/^```(json)?/, '').replace(/```$/, '').trim() }
     let data = JSON.parse(cleanContent)
@@ -88,8 +93,6 @@ function formatOffers(offers) {
 
 function extractGupshupPayload(body) {
   if (!body) return null;
-
-  // --- NEW: Handle Meta format v3 ---
   try {
     if (body.entry && body.entry[0]?.changes?.[0]?.value?.messages?.[0]) {
       const val = body.entry[0].changes[0].value;
@@ -99,8 +102,6 @@ function extractGupshupPayload(body) {
       if (phone && text) return { phone, text };
     }
   } catch (e) {}
-
-  // --- OLD: Handle Gupshup format ---
   const payload = body.payload || body;
   const sender = payload.sender || body.sender;
   let text = null;
@@ -108,11 +109,11 @@ function extractGupshupPayload(body) {
   else if (payload.text) text = payload.text;
   else if (typeof payload.body === 'string') text = payload.body;
   else if (body.text) text = body.text;
-
   const phone = sender?.phone || body.mobile || body.waNumber || body.from;
   if (!phone ||!text) return null;
   return { phone, text };
 }
+
 app.post('/webhook', async (req, res) => {
     res.status(200).send('OK')
     console.log('WEBHOOK HIT:', JSON.stringify(req.body).substring(0, 800));
