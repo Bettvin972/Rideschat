@@ -7,7 +7,6 @@ const app = express()
 app.use(express.json())
 app.use(express.urlencoded({ extended: true }))
 
-// FIX 1: Sync DB on startup so tables exist
 sequelize.sync({ alter: true }).then(() => console.log("✅ DB Synced")).catch(e => console.error("DB Sync error:", e.message))
 
 function getRealDate(aiDate) {
@@ -100,46 +99,4 @@ async function sendGupshupMessage(toPhone, messageText) {
 
 function formatRequests(reqs) {
     if (!reqs || reqs.length === 0) return "No active rides."
-    return reqs.map(r => `${r.id}. ${r.from}->${r.to} ${r.date} ${r.time || ''} Bags:${r.bags} ${r.girls_only? 'GIRLS ONLY' : ''} wa.me/${r.phone}`).join('\n')
-}
-function formatOffers(offers) {
-    if (!offers || offers.length === 0) return "No active offers."
-    return offers.map((o, i) => `${i + 1}. ${o.from}->${o.to} ${o.date} ${o.time || ''} ${o.seats}seats $${o.price} ${o.rating}⭐ wa.me/${o.phone}`).join('\n')
-}
-
-function extractGupshupPayload(body) {
-  if (!body) return null;
-  try {
-    if (body.entry && body.entry[0]?.changes?.[0]?.value?.messages?.[0]) {
-      const val = body.entry[0].changes[0].value;
-      const msg = val.messages[0];
-      const phone = msg.from || val.contacts?.[0]?.wa_id;
-      const text = msg.text?.body || msg.button?.text || msg.interactive?.button_reply?.title || null;
-      if (phone && text) return { phone, text };
-    }
-  } catch (e) {}
-  const payload = body.payload || body;
-  const sender = payload.sender || body.sender;
-  let text = null;
-  if (payload.payload && payload.payload.text) text = payload.payload.text;
-  else if (payload.text) text = payload.text;
-  else if (typeof payload.body === 'string') text = payload.body;
-  else if (body.text) text = body.text;
-  const phone = sender?.phone || body.mobile || body.waNumber || body.from;
-  if (!phone ||!text) return null;
-  return { phone, text };
-}
-
-app.post('/webhook', async (req, res) => {
-    res.status(200).send('OK')
-    console.log('WEBHOOK HIT:', JSON.stringify(req.body).substring(0, 800));
-    const extracted = extractGupshupPayload(req.body);
-    if (!extracted) return;
-    const { phone, text } = extracted;
-    try {
-        const user = await User.getOrCreate(phone)
-        const ai = await parseWithAI(text)
-        console.log(`[${phone}] Text: "${text}" -> AI:`, ai)
-
-        if (ai.role === 'greeting' || (!ai.from &&!ai.to && (!ai.command || ai.command === 'null' || ai.command === null))) {
-            await sendGupshupMessage(phone, `👋 Welcome to Rides
+    return reqs.map(r => `${r.id}. ${r.from
