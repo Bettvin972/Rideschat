@@ -1,5 +1,7 @@
 const express = require('express')
 const axios = require('axios')
+require('dotenv').config()
+const { sequelize } = require('./database')
 const { OpenAI } = require('openai')
 const { User, RideRequest, RideOffer } = require('./database')
 
