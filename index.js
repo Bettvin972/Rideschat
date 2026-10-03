@@ -143,8 +143,8 @@ async function parseWithAI(msg) {
     var apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) throw new Error("GEMINI_API_KEY missing");
 
-    // Supported Gemini endpoints
-    var models = ["gemini-2.5-flash", "gemini-1.5-flash-latest"];
+    // Active supported Gemini models
+    var models = ["gemini-3.8-flash", "gemini-3.5-flash-lite"];
 
     for (var i = 0; i < models.length; i++) {
         try {
