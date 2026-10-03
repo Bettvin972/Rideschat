@@ -17,7 +17,7 @@ let sock = null;
 let qrLast = null;
 const AUTH_PATH = path.join(__dirname, 'auth_info');
 
-// Helper to convert standard text into Unicode Sans-Bold (Custom Font visual effect for WhatsApp)
+// Helper to convert standard text into Unicode Sans-Bold
 function toBoldSans(text) {
     const sansBoldMap = {
         'A':'𝗔','B':'𝗕','C':'𝗖','D':'𝗗','E':'𝗘','F':'𝗙','G':'𝗚','H':'𝗛','I':'𝗜','J':'𝗝','K':'𝗞','L':'𝗟','M':'𝗠',
@@ -191,7 +191,7 @@ async function parseWithAI(msg) {
             if (data.date) data.date = getRealDate(data.date);
             return data;
         } catch (err) {
-            console.error("Gemini API Error details:", err.response ? err.response.data : err.message);
+            console.error(`Gemini API [${models[i]}] Error:`, err.response ? err.response.data : err.message);
             if (i === models.length - 1) throw err;
         }
     }
@@ -256,8 +256,15 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             return;
         }
 
+        // Prompt user if pickup/dropoff points are missing
         if (ai.role === 'rider' && (!ai.from || !ai.to)) {
-            await sendGupshupMessage(phoneJid, `📍 ${toBoldSans("WHERE ARE YOU TRAVELING?")}\n\nExample: \`Need ride Juja to Thika tomorrow 5pm\``);
+            await sendGupshupMessage(phoneJid, `📍 ${toBoldSans("WHERE ARE YOU TRAVELING?")}\n\nPlease specify both your origin and destination.\n\nExample: \`Need ride Juja to Thika tomorrow at 5pm\``);
+            return;
+        }
+
+        // Prompt user if departure time is missing
+        if (ai.role === 'rider' && !ai.time) {
+            await sendGupshupMessage(phoneJid, `⏰ ${toBoldSans("WHAT TIME ARE YOU LEAVING?")}\n\nPlease include your preferred travel time.\n\nExample: \`Leaving ${ai.from} to ${ai.to} at 3:30 PM\``);
             return;
         }
 
@@ -277,17 +284,20 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             }
             if (ai.command === 'TAKE') {
                 var ride = await RideRequest.findById(ai.takeId);
-                if (ride) {
+                if (ride && ride.status === 'PENDING') {
                     await ride.updateStatus("TAKEN");
                     
                     const riderContactStr = cleanContactNumber(ride.phone);
                     const driverContactStr = cleanContactNumber(realPhone || phoneJid);
+                    var timeStr = ride.time ? ride.time : 'Flexible';
 
-                    await sendGupshupMessage(phoneJid, `🎉 ${toBoldSans("TRIP MATCHED SUCCESSFULLY!")}\n\n📍 *Route:* ${ride.from} ➔ ${ride.to}\n📅 *When:* \`${ride.date || 'Today'}\` at \`${ride.time || 'Flexible'}\`\n\n👤 *Rider Contact:* ${riderContactStr}\n\n_We have notified the rider with your details!_`);
+                    // Notify Driver
+                    await sendGupshupMessage(phoneJid, `🎉 ${toBoldSans("TRIP MATCHED SUCCESSFULLY!")}\n\n📍 *Route:* ${ride.from} ➔ ${ride.to}\n📅 *When:* \`${ride.date || 'Today'}\` at \`${timeStr}\`\n\n👤 *Rider Contact:* ${riderContactStr}\n\n_We have notified the rider with your details!_`);
                     
+                    // Notify Rider
                     await sendGupshupMessage(ride.phone, `🚘 ${toBoldSans("DRIVER ASSIGNED TO YOUR RIDE!")}\n\nYour trip from *${ride.from}* to *${ride.to}* has been accepted.\n\n⭐ *Driver Rating:* ${user.rating.toFixed(1)}\n📱 *Driver Contact:* ${driverContactStr}\n\n_Please contact your driver directly._`);
                 } else {
-                    await sendGupshupMessage(phoneJid, `❌ *Ride #${ai.takeId}* was not found or has already been taken.`);
+                    await sendGupshupMessage(phoneJid, `❌ *Ride #${ai.takeId}* was not found or has already been taken by another driver.`);
                 }
             }
             if (ai.command === 'RATING') {
@@ -301,14 +311,26 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             var rideReq = await RideRequest.createCustom(realPhone || phoneJid, ai);
             var matches = await RideOffer.perfectMatch(rideReq);
             var displayDate = rideReq.date || 'Today';
+            var timeStrReq = rideReq.time ? rideReq.time : 'Flexible';
 
             if (matches && matches.length > 0) {
                 await sendGupshupMessage(phoneJid, `✅ ${toBoldSans("FOUND AVAILABLE DRIVER(S)!")}\n\n${formatOffers(matches)}`);
             } else {
-                await sendGupshupMessage(phoneJid, `📝 ${toBoldSans("RIDE REQUEST CREATED!")} *(ID: #${rideReq.id})*\n📍 *Route:* ${rideReq.from} ➔ ${rideReq.to}\n📅 *Date:* \`${displayDate}\` at \`${rideReq.time || 'Flexible'}\`\n\n_Alerting nearby drivers now..._`);
+                await sendGupshupMessage(phoneJid, `📝 ${toBoldSans("RIDE REQUEST CREATED!")} *(ID: #${rideReq.id})*\n📍 *Route:* ${rideReq.from} ➔ ${rideReq.to}\n📅 *Date:* \`${displayDate}\` at \`${timeStrReq}\`\n\n_Alerting nearby drivers now..._`);
+                
                 var drivers = await User.getOnlineNearby(rideReq.from);
-                for (var j = 0; j < drivers.length; j++) {
-                    await sendGupshupMessage(drivers[j].phone, `🔔 ${toBoldSans("NEW RIDE REQUEST NEAR YOU!")}\n\n📍 *Route:* ${rideReq.from} ➔ ${rideReq.to}\n📅 *When:* \`${displayDate}\` at \`${rideReq.time || 'Flexible'}\`\n🧳 *Bags:* ${rideReq.bags}\n\n👉 Reply \`TAKE ${rideReq.id}\` to accept!`);
+                
+                // Exclude the current rider from receiving driver broadcasts
+                var currentRiderJid = realPhone || phoneJid;
+                var currentRiderClean = currentRiderJid.split('@')[0].replace(/[^0-9]/g, '');
+                
+                var filteredDrivers = drivers.filter(d => {
+                    var driverClean = (d.phone || '').split('@')[0].replace(/[^0-9]/g, '');
+                    return driverClean !== currentRiderClean;
+                });
+
+                for (var j = 0; j < filteredDrivers.length; j++) {
+                    await sendGupshupMessage(filteredDrivers[j].phone, `🔔 ${toBoldSans("NEW RIDE REQUEST NEAR YOU!")}\n\n📍 *Route:* ${rideReq.from} ➔ ${rideReq.to}\n📅 *When:* \`${displayDate}\` at \`${timeStrReq}\`\n🧳 *Bags:* ${rideReq.bags}\n\n👉 Reply \`TAKE ${rideReq.id}\` to accept!`);
                 }
             }
             return;
@@ -318,17 +340,30 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             var offer = await RideOffer.createCustom(realPhone || phoneJid, ai);
             var riders = await RideRequest.getMatchingRiders(offer);
             var displayOfferDate = offer.date || 'Today';
+            var offerTimeStr = offer.time ? offer.time : 'Flexible';
 
             if (riders.length > 0) {
                 await sendGupshupMessage(phoneJid, `🚘 ${toBoldSans("MATCHING RIDERS FOUND!")}\n\n${formatRequests(riders)}`);
             } else {
-                await sendGupshupMessage(phoneJid, `🚘 ${toBoldSans("OFFER POSTED!")}\n📍 *Route:* ${offer.from} ➔ ${offer.to}\n📅 *Date:* \`${displayOfferDate}\` at \`${offer.time || 'Flexible'}\`\n\n_We will alert you as soon as a passenger books._`);
+                await sendGupshupMessage(phoneJid, `🚘 ${toBoldSans("OFFER POSTED!")}\n📍 *Route:* ${offer.from} ➔ ${offer.to}\n📅 *Date:* \`${displayOfferDate}\` at \`${offerTimeStr}\`\n\n_We will alert you as soon as a passenger books._`);
             }
         }
     } catch (err) {
         console.error('Error:', err.stack || err.message);
     }
 }
+
+// Background Cron-like Task: Periodic DB Cleanup Every 15 Minutes
+setInterval(async () => {
+    try {
+        if (RideRequest.clearExpired && RideOffer.clearExpired) {
+            await RideRequest.clearExpired();
+            await RideOffer.clearExpired();
+        }
+    } catch (e) {
+        console.error('[CRON CLEANUP ERROR]', e.message);
+    }
+}, 15 * 60 * 1000);
 
 app.get('/qr', function (req, res) {
     if (!qrLast) return res.send("<h1>Connected! Bot Live</h1>");
