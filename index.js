@@ -32,16 +32,14 @@ async function startWhatsApp() {
         if(qr) {
             qrLast = qr;
             qrcode.generate(qr, {small: true});
-            console.log("===== SCAN THIS QR =====");
+            console.log("SCAN THIS QR");
         }
-        if(connection === 'open') { console.log('✅ WhatsApp Connected!'); qrLast = null; }
+        if(connection === 'open') { console.log('WhatsApp Connected!'); qrLast = null; }
         if(connection === 'close') {
             const shouldReconnect = lastDisconnect?.error?.output?.statusCode!== DisconnectReason.loggedOut;
-            console.log('Closed, reconnect:', shouldReconnect);
             if(shouldReconnect) setTimeout(startWhatsApp, 3000);
         }
     });
-
     sock.ev.on('messages.upsert', async ({ messages }) => {
         try {
             if (!messages ||!messages[0]) return;
@@ -69,12 +67,12 @@ async function startWhatsApp() {
 startWhatsApp();
 
 process.on('uncaughtException', (err) => {
-    if (err.message && err.message.includes('Bad MAC')) { console.log('Ignored Bad MAC'); return; }
+    if (err.message && err.message.includes('Bad MAC')) return;
     console.error('Uncaught:', err);
 });
 process.on('unhandledRejection', (reason) => {
     const msg = reason?.message || String(reason);
-    if (msg.includes('Bad MAC') || msg.includes('SessionError') || msg.includes('No matching')) { console.log('Ignored Rejection:', msg); return; }
+    if (msg.includes('Bad MAC') || msg.includes('SessionError') || msg.includes('No matching')) return;
     console.error('Unhandled:', reason);
 });
 
@@ -125,7 +123,7 @@ async function sendGupshupMessage(toPhone, messageText) {
 }
 
 function formatRequests(reqs) {
-    if (!reqs || reqs.length === 0) return "No active rides. \nTry: Need ride Juja to Nairobi tomorrow 5pm";
+    if (!reqs || reqs.length === 0) return "No active rides. Try: Need ride Juja to Nairobi tomorrow 5pm";
     return reqs.map(function(r){
         var girls = r.girls_only? ' GIRLS ONLY' : '';
         return r.id + ". " + r.from + "->" + r.to + " " + r.date + " " + (r.time || '') + " Bags:" + r.bags + girls + " wa.me/" + r.phone;
@@ -144,7 +142,7 @@ async function handleRideLogic(phone, text) {
         var ai = await parseWithAI(text);
         console.log("[" + phone + "] -> AI: " + JSON.stringify(ai));
         if (ai.role === 'greeting' || (!ai.from &&!ai.to && (!ai.command || ai.command === 'null' || ai.command === null))) {
-            await sendGupshupMessage(phone, "Welcome to Rideschat Kenya! 🇰🇪\n\nHow to use:\nRIDER: Need ride Juja to Nairobi tomorrow 5pm\nDRIVER: Driver ON near Juja\nTo accept: TAKE 1\nRate: 5 stars");
+            await sendGupshupMessage(phone, "Welcome to Rideschat Kenya!\n\nHow to use:\nRIDER: Need ride Juja to Nairobi tomorrow 5pm\nDRIVER: Driver ON near Juja\nTo accept: TAKE 1\nRate: 5 stars");
             return;
         }
         if (ai.role === 'rider' && (!ai.from ||!ai.to)) {
@@ -163,8 +161,8 @@ async function handleRideLogic(phone, text) {
                 var ride = await RideRequest.findById(ai.takeId);
                 if (ride) {
                     await ride.updateStatus("TAKEN");
-                    await sendGupshupMessage(phone, "✅ You claimed ride " + ride.id + ". Rider: wa.me/" + ride.phone + " - Call them now!");
-                    await sendGupshupMessage(ride.phone, "✅ Driver on the way! " + user.phone + " Rating: " + user.rating.toFixed(1) + " star - Contact: wa.me/" + phone + "\nFrom: " + ride.from + " To: " + ride.to);
+                    await sendGupshupMessage(phone, "You claimed ride " + ride.id + ". Rider: wa.me/" + ride.phone + " - Call them now!");
+                    await sendGupshupMessage(ride.phone, "Driver on the way! " + user.phone + " Rating: " + user.rating.toFixed(1) + " star - Contact: wa.me/" + phone + "\nFrom: " + ride.from + " To: " + ride.to);
                 } else { await sendGupshupMessage(phone, "Ride ID " + ai.takeId + " not found or already taken."); }
             }
             if (ai.command === 'RATING') { await user.addRating(ai.rating); await sendGupshupMessage(phone, "Thanks! You rated " + ai.rating + " star"); }
@@ -174,4 +172,35 @@ async function handleRideLogic(phone, text) {
             var rideReq = await RideRequest.createCustom(phone, ai);
             var matches = await RideOffer.perfectMatch(rideReq);
             if (matches && matches.length > 0) {
-                await sendGupshupMessage(phone, "Rideschat
+                await sendGupshupMessage(phone, "Rideschat: Found " + matches.length + " driver(s) for " + rideReq.date + " " + (rideReq.time || '') + "\n" + formatOffers(matches) + "\nContact driver via link.");
+            } else {
+                await sendGupshupMessage(phone, "Rideschat: Booked! No driver online yet for " + rideReq.from + "->" + rideReq.to + " on " + rideReq.date + " " + (rideReq.time || '') + ". We will alert drivers near you.");
+                var drivers = await User.getOnlineNearby(rideReq.from);
+                for (var j=0;j<drivers.length;j++) {
+                    await sendGupshupMessage(drivers[j].phone, "NEW RIDE near you! " + rideReq.from + "->" + rideReq.to + " " + rideReq.date + " " + (rideReq.time || '') + " Bags:" + rideReq.bags + " \nTAKE " + rideReq.id + " to accept\nRider: wa.me/" + phone);
+                }
+            }
+            return;
+        }
+        if (ai.role === 'driver') {
+            var offer = await RideOffer.createCustom(phone, ai);
+            var riders = await RideRequest.getMatchingRiders(offer);
+            if (riders.length > 0) {
+                await sendGupshupMessage(phone, "Rideschat: " + riders.length + " rider(s) need " + offer.date + "!\n" + formatRequests(riders));
+            } else {
+                await sendGupshupMessage(phone, "Offer posted: " + offer.from + "->" + offer.to + " " + offer.date + " " + (offer.time || '') + " - Waiting for riders.");
+            }
+        }
+    } catch (err) { console.error('Error:', err.stack || err.message); }
+}
+
+app.get('/qr', function(req, res){
+    if(!qrLast) return res.send("<h1>Connected! Bot Live</h1>");
+    var qrImage = "https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=" + encodeURIComponent(qrLast);
+    res.send("<h1>Scan with your Safaricom line</h1><p>WhatsApp > Linked Devices > Link a Device</p><img src='"+qrImage+"'/><p>Refresh after 20 sec</p>");
+});
+app.post('/webhook', function(req,res){ res.send('OK'); });
+app.get('/ping', function(req, res){ res.send("Rideschat Kenya Alive"); });
+app.get('/', function(req, res){ res.send("Rideschat Kenya LIVE - Go to /qr"); });
+var PORT = process.env.PORT || 10000;
+app.listen(PORT, function(){ console.log("Rideschat Kenya running on port " + PORT); });
