@@ -1,7 +1,10 @@
 require('dotenv').config()
 const express = require('express')
 const axios = require('axios')
+const fs = require('fs')
 const { sequelize, User, RideRequest, RideOffer } = require('./database')
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys')
+const qrcode = require('qrcode-terminal')
 
 const app = express()
 app.use(express.json())
@@ -9,12 +12,47 @@ app.use(express.urlencoded({ extended: true }))
 
 sequelize.sync({ alter: true }).then(function(){ console.log("DB Synced") }).catch(function(e){ console.error("DB Sync error:", e.message) })
 
+let sock = null
+let qrLast = null
+
+async function startWhatsApp() {
+    if(!fs.existsSync('auth_info')) fs.mkdirSync('auth_info')
+    const { state, saveCreds } = await useMultiFileAuthState('auth_info')
+    sock = makeWASocket({
+        auth: state,
+        printQRInTerminal: false,
+        browser: ["Rideschat", "Chrome", "1.0"]
+    })
+    sock.ev.on('creds.update', saveCreds)
+    sock.ev.on('connection.update', async (update) => {
+        const { connection, lastDisconnect, qr } = update
+        if(qr) {
+            qrLast = qr
+            qrcode.generate(qr, {small: true})
+            console.log("===== SCAN THIS QR WITH SAFARICOM LINE =====")
+        }
+        if(connection === 'open') { console.log('✅ WhatsApp Connected!'); qrLast = null }
+        if(connection === 'close') {
+            const shouldReconnect = lastDisconnect?.error?.output?.statusCode!== DisconnectReason.loggedOut
+            if(shouldReconnect) setTimeout(startWhatsApp, 3000)
+        }
+    })
+    sock.ev.on('messages.upsert', async ({ messages }) => {
+        const msg = messages[0]
+        if(!msg.message || msg.key.fromMe) return
+        const phone = msg.key.remoteJid.replace('@s.whatsapp.net','').replace('@c.us','')
+        const text = msg.message.conversation || msg.message.extendedTextMessage?.text || msg.message.imageMessage?.caption || ""
+        if(!text) return
+        console.log(`MSG [${phone}]: ${text}`)
+        handleRideLogic(phone.trim(), text)
+    })
+}
+startWhatsApp()
+
 function getRealDate(aiDate) {
     const now = new Date()
     if (!aiDate || aiDate.toLowerCase() === 'today') return now.toISOString().split('T')[0]
-    if (aiDate.toLowerCase() === 'tomorrow') {
-        var t = new Date(); t.setDate(now.getDate() + 1); return t.toISOString().split('T')[0]
-    }
+    if (aiDate.toLowerCase() === 'tomorrow') { var t = new Date(); t.setDate(now.getDate() + 1); return t.toISOString().split('T')[0] }
     var days = ["sunday","monday","tuesday","wednesday","thursday","friday","saturday"]
     if (days.includes(aiDate.toLowerCase())) {
         var target = days.indexOf(aiDate.toLowerCase())
@@ -34,43 +72,28 @@ async function parseWithAI(msg) {
     var prompt = AI_PROMPT.replaceAll("{TODAY_INFO}", todayInfo).replaceAll("{TODAY_DATE}", now.toISOString().split('T')[0]).replaceAll("{TOMORROW_DATE}", tomorrow.toISOString().split('T')[0]).replace("{MSG}", msg)
     var apiKey = process.env.GEMINI_API_KEY
     if (!apiKey) throw new Error("GEMINI_API_KEY missing")
-    var models = ["gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-3.7-flash"]
+    var models = ["gemini-2.0-flash", "gemini-1.5-flash"]
     for (var i=0;i<models.length;i++) {
-        var modelName = models[i]
         try {
-            console.log("Trying " + modelName)
-            var url = "https://generativelanguage.googleapis.com/v1beta/models/" + modelName + ":generateContent?key=" + apiKey
+            var url = "https://generativelanguage.googleapis.com/v1beta/models/" + models[i] + ":generateContent?key=" + apiKey
             var res = await axios.post(url, { contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0 } })
-            var cleanContent = res.data.candidates[0].content.parts[0].text.trim()
-            if (cleanContent.startsWith("```")) { cleanContent = cleanContent.replace(/^```(json)?/, '').replace(/```$/, '').trim() }
+            var cleanContent = res.data.candidates[0].content.parts[0].text.trim().replace(/^```(json)?/, '').replace(/```$/, '').trim()
             var data = JSON.parse(cleanContent)
             if (data.date) data.date = getRealDate(data.date)
-            console.log("Success with " + modelName)
             return data
-        } catch (err) {
-            console.log("Failed " + modelName + ": " + (err.response && err.response.data && err.response.data.error && err.response.data.error.message || err.message))
-            if (i === models.length - 1) throw err
-        }
+        } catch (err) { if (i === models.length - 1) throw err }
     }
 }
 
+// SAME NAME SO YOU DON'T CHANGE OTHER CODE - BUT NOW USES BAILEYS
 async function sendGupshupMessage(toPhone, messageText) {
-    if (!toPhone) return;
-    var cleanPhone = toPhone.replace('@s.whatsapp.net', '').replace('+', '').trim();
-    var params = new URLSearchParams();
-    params.append('channel', 'whatsapp');
-    params.append('source', process.env.GUPSHUP_APP_NUMBER);
-    params.append('destination', cleanPhone);
-    params.append('src.name', process.env.GUPSHUP_APP_NAME);
-    params.append('message', JSON.stringify({ type: 'text', text: messageText }));
-    var apiKey = (process.env.GUPSHUP_API_KEY || process.env.GUPSHUP_APIKEY || '').trim();
-    if (!apiKey) { console.error('GUPSHUP API Key missing!'); return; }
+    if (!toPhone ||!sock) return;
     try {
-        var res = await axios.post('https://api.gupshup.io/sm/api/v1/msg', params.toString(), {
-            headers: { 'apikey': apiKey, 'Authorization': apiKey, 'Content-Type': 'application/x-www-form-urlencoded' }
-        });
-        console.log('Gupshup sent OK: ' + (res.data && res.data.status || 'submitted'));
-    } catch (err) { console.error('Gupshup send error:', err.response && err.response.data || err.message) }
+        let jid = toPhone.replace('@s.whatsapp.net', '').replace('+', '').trim();
+        if(!jid.includes('@')) jid = jid + '@s.whatsapp.net'
+        await sock.sendMessage(jid, { text: messageText })
+        console.log('Sent to ' + toPhone)
+    } catch (err) { console.error('Send error:', err.message) }
 }
 
 function formatRequests(reqs) {
@@ -87,50 +110,19 @@ function formatOffers(offers) {
     }).join('\n')
 }
 
-function extractGupshupPayload(body) {
-  if (!body) return null;
-  try {
-    if (body.entry && body.entry[0] && body.entry[0].changes && body.entry[0].changes[0] && body.entry[0].changes[0].value && body.entry[0].changes[0].value.messages && body.entry[0].changes[0].value.messages[0]) {
-      var val = body.entry[0].changes[0].value;
-      var msg = val.messages[0];
-      var phone = msg.from || (val.contacts && val.contacts[0] && val.contacts[0].wa_id);
-      var text = (msg.text && msg.text.body) || (msg.button && msg.button.text) || (msg.interactive && msg.interactive.button_reply && msg.interactive.button_reply.title) || null;
-      if (phone && text) return { phone: phone, text: text };
-    }
-  } catch (e) {}
-  var payload = body.payload || body;
-  var sender = payload.sender || body.sender;
-  var text2 = null;
-  if (payload.payload && payload.payload.text) text2 = payload.payload.text;
-  else if (payload.text) text2 = payload.text;
-  else if (typeof payload.body === 'string') text2 = payload.body;
-  else if (body.text) text2 = body.text;
-  var phone2 = sender && sender.phone || body.mobile || body.waNumber || body.from;
-  if (!phone2 ||!text2) return null;
-  return { phone: phone2, text: text2 };
-}
-
-app.post('/webhook', async function(req, res) {
-    res.status(200).send('OK')
-    console.log('WEBHOOK HIT: ' + JSON.stringify(req.body).substring(0, 800));
-    var extracted = extractGupshupPayload(req.body);
-    if (!extracted) return;
-    var phone = extracted.phone; var text = extracted.text;
+async function handleRideLogic(phone, text) {
     try {
         var user = await User.getOrCreate(phone)
         var ai = await parseWithAI(text)
-        console.log("[" + phone + "] Text: " + text + " -> AI: " + JSON.stringify(ai))
-
+        console.log("[" + phone + "] -> AI: " + JSON.stringify(ai))
         if (ai.role === 'greeting' || (!ai.from &&!ai.to && (!ai.command || ai.command === 'null' || ai.command === null))) {
             await sendGupshupMessage(phone, "Welcome to Rideschat!\n\nSend like:\n- Need ride Denton to Dallas tomorrow 5pm\n- Driver ON near UNT\n- TAKE 1\n- 5 stars to rate")
             return
         }
-        // FIXED BRACKET HERE
         if (ai.role === 'rider' && (!ai.from ||!ai.to)) {
             await sendGupshupMessage(phone, "Where to where? Send like: Need ride Denton to Dallas tomorrow 5pm")
             return
         }
-
         if (ai.role === 'command') {
             if (ai.command === 'ONLINE') {
                 await user.setOnline(ai.from || "Denton", 2)
@@ -150,47 +142,40 @@ app.post('/webhook', async function(req, res) {
             if (ai.command === 'RATING') { await user.addRating(ai.rating); await sendGupshupMessage(phone, "Thanks! Rated " + ai.rating + " star") }
             return
         }
-
         if (ai.role === 'rider') {
-            try {
-                var rideReq = await RideRequest.createCustom(phone, ai)
-                console.log("Created ride: " + (rideReq && rideReq.id) + " " + (rideReq && rideReq.from) + "->" + (rideReq && rideReq.to))
-                if (!rideReq ||!rideReq.from) throw new Error("create failed")
-                var matches = await RideOffer.perfectMatch(rideReq)
-                if (matches && matches.length > 0) {
-                    await sendGupshupMessage(phone, "Rideschat: Found " + matches.length + " for " + rideReq.date + " " + (rideReq.time || '') + "\n" + formatOffers(matches))
-                } else {
-                    await sendGupshupMessage(phone, "Rideschat: No exact match for " + rideReq.date + " " + (rideReq.time || '') + ". Queued. Will notify drivers.")
-                    var drivers = await User.getOnlineNearby(rideReq.from)
-                    for (var j=0;j<drivers.length;j++) {
-                        await sendGupshupMessage(drivers[j].phone, "Near you! " + rideReq.from + "->" + rideReq.to + " " + rideReq.date + " Bags:" + rideReq.bags + " TAKE " + rideReq.id)
-                    }
+            var rideReq = await RideRequest.createCustom(phone, ai)
+            var matches = await RideOffer.perfectMatch(rideReq)
+            if (matches && matches.length > 0) {
+                await sendGupshupMessage(phone, "Rideschat: Found " + matches.length + " for " + rideReq.date + " " + (rideReq.time || '') + "\n" + formatOffers(matches))
+            } else {
+                await sendGupshupMessage(phone, "Rideschat: No exact match for " + rideReq.date + " " + (rideReq.time || '') + ". Queued. Will notify drivers.")
+                var drivers = await User.getOnlineNearby(rideReq.from)
+                for (var j=0;j<drivers.length;j++) {
+                    await sendGupshupMessage(drivers[j].phone, "Near you! " + rideReq.from + "->" + rideReq.to + " " + rideReq.date + " Bags:" + rideReq.bags + " TAKE " + rideReq.id)
                 }
-            } catch (dbErr) {
-                console.error("RIDER DB ERROR: " + dbErr.message)
-                await sendGupshupMessage(phone, "Got it! " + ai.from + " to " + ai.to + " on " + (ai.date || 'today') + " saved. Notifying drivers.")
             }
             return
         }
-
         if (ai.role === 'driver') {
-            try {
-                var offer = await RideOffer.createCustom(phone, ai)
-                var riders = await RideRequest.getMatchingRiders(offer)
-                if (riders.length > 0) {
-                    await sendGupshupMessage(phone, "Rideschat: " + riders.length + " riders need " + offer.date + "!\n" + formatRequests(riders))
-                } else {
-                    await sendGupshupMessage(phone, "Offer posted: " + offer.from + "->" + offer.to + " " + offer.date + " " + (offer.time || ''))
-                }
-            } catch (dbErr) {
-                console.error("DRIVER DB ERROR: " + dbErr.message)
-                await sendGupshupMessage(phone, "Offer saved: " + ai.from + " to " + ai.to)
+            var offer = await RideOffer.createCustom(phone, ai)
+            var riders = await RideRequest.getMatchingRiders(offer)
+            if (riders.length > 0) {
+                await sendGupshupMessage(phone, "Rideschat: " + riders.length + " riders need " + offer.date + "!\n" + formatRequests(riders))
+            } else {
+                await sendGupshupMessage(phone, "Offer posted: " + offer.from + "->" + offer.to + " " + offer.date + " " + (offer.time || ''))
             }
         }
-    } catch (err) { console.error('Error handling webhook:', err.stack || err.message) }
-})
+    } catch (err) { console.error('Error:', err.stack || err.message) }
+}
 
+// Routes
+app.get('/qr', function(req, res){
+    if(!qrLast) return res.send("<h1 style='font-family:sans-serif'>✅ Connected or waiting... check / logs</h1>")
+    var qrImage = "https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=" + encodeURIComponent(qrLast)
+    res.send("<h1>Scan with Safaricom line</h1><p>WhatsApp > Linked Devices > Link a Device</p><img src='"+qrImage+"'/><p>Refresh after 20 sec</p>")
+})
+app.post('/webhook', function(req,res){ res.send('OK') }) // not needed anymore
 app.get('/ping', function(req, res){ res.send("Rideschat Alive") })
-app.get('/', function(req, res){ res.send("Rideschat LIVE") })
+app.get('/', function(req, res){ res.send("Rideschat LIVE - Baileys Mode. Go to /qr") })
 var PORT = process.env.PORT || 10000
 app.listen(PORT, function(){ console.log("Rideschat running on port " + PORT) })
