@@ -110,7 +110,7 @@ process.on('unhandledRejection', (reason) => {
 
 function getRealDate(aiDate) {
     const now = new Date();
-    if (!aiDate || aiDate.toLowerCase() === 'today') return now.toISOString().split('T')[0];
+    if (!aiDate || aiDate.toLowerCase() === 'today' || aiDate === 'null') return now.toISOString().split('T')[0];
     if (aiDate.toLowerCase() === 'tomorrow') {
         var t = new Date();
         t.setDate(now.getDate() + 1);
@@ -128,7 +128,17 @@ function getRealDate(aiDate) {
     return aiDate;
 }
 
-var AI_PROMPT = 'You are Rideschat Kenya parser. Current: {TODAY_INFO} [{TODAY_DATE}]. Understand English, Swahili, Sheng. Translate to English JSON. Return JSON only: {"role":"rider|driver|command|greeting","command":"ONLINE|OFFLINE|SHOW_REQUESTS|TAKE|RATING|null","takeId":number|null,"from":"string or null","to":"string or null","date":"YYYY-MM-DD or null","time":"HH:MM or null","seats":number|null,"bags":number,"girls_only":bool,"pool_allowed":bool,"rating":number|null} Rules: If greeting like Hi/Hello/Sasa/Niaje set role greeting. tomorrow = {TOMORROW_DATE}. TAKE 1 -> command TAKE. Examples: Hi -> greeting, Need ride Juja to Nairobi tmrw 5pm -> rider, Driver ON near Juja -> command ONLINE, TAKE 1 -> command TAKE takeId 1, 5 stars -> command RATING rating 5 Message: "{MSG}" JSON only.';
+// Clean phone numbers by removing @lid or @s.whatsapp.net for clean output display
+function cleanContactNumber(jid) {
+    if (!jid) return "Contact user directly";
+    if (jid.includes('@lid')) {
+        return "WhatsApp User (LID)";
+    }
+    const cleanNum = jid.split('@')[0].replace('+', '').trim();
+    return `wa.me/${cleanNum}`;
+}
+
+var AI_PROMPT = 'You are Rideschat Kenya conversational parser & assistant. Current: {TODAY_INFO} [{TODAY_DATE}]. Understand English, Swahili, and Sheng. Return strictly JSON only: {"role":"rider|driver|command|chat","command":"ONLINE|OFFLINE|SHOW_REQUESTS|TAKE|RATING|null","takeId":number|null,"from":"string or null","to":"string or null","date":"YYYY-MM-DD or null","time":"HH:MM or null","seats":number|null,"bags":number,"girls_only":bool,"pool_allowed":bool,"rating":number|null,"reply":"string or null"} Rules: If the user message is a greeting, small talk, acknowledgement ("okay", "cool", "thanks"), or general question, set role to "chat" and provide a warm, concise response in "reply" guiding them on how to request a ride or post an offer naturally. Message: "{MSG}"';
 
 async function parseWithAI(msg) {
     var now = new Date();
@@ -143,7 +153,6 @@ async function parseWithAI(msg) {
     var apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) throw new Error("GEMINI_API_KEY missing");
 
-    // Active supported Gemini models
     var models = ["gemini-3.8-flash", "gemini-3.5-flash-lite"];
 
     for (var i = 0; i < models.length; i++) {
@@ -152,7 +161,7 @@ async function parseWithAI(msg) {
             var res = await axios.post(url, {
                 contents: [{ parts: [{ text: prompt }] }],
                 generationConfig: {
-                    temperature: 0,
+                    temperature: 0.3,
                     responseMimeType: "application/json"
                 }
             });
@@ -183,91 +192,105 @@ async function sendGupshupMessage(toJid, messageText) {
 }
 
 function formatRequests(reqs) {
-    if (!reqs || reqs.length === 0) return "No active rides. Try: Need ride Juja to Nairobi tomorrow 5pm";
+    if (!reqs || reqs.length === 0) return "No active rides right now.";
     return reqs.map(function (r) {
         var girls = r.girls_only ? ' GIRLS ONLY' : '';
-        var contact = r.phone.includes('@') ? r.phone : 'wa.me/' + r.phone;
-        return r.id + ". " + r.from + "->" + r.to + " " + r.date + " " + (r.time || '') + " Bags:" + r.bags + girls + " " + contact;
-    }).join('\n');
+        var contact = cleanContactNumber(r.phone);
+        return r.id + ". " + r.from + " -> " + r.to + " (" + (r.date || 'Today') + " " + (r.time || '') + ") Bags:" + r.bags + girls + "\nContact: " + contact;
+    }).join('\n\n');
 }
 
 function formatOffers(offers) {
-    if (!offers || offers.length === 0) return "No active offers.";
+    if (!offers || offers.length === 0) return "No active offers right now.";
     return offers.map(function (o, i) {
-        var contact = o.phone.includes('@') ? o.phone : 'wa.me/' + o.phone;
-        return (i + 1) + ". " + o.from + "->" + o.to + " " + o.date + " " + (o.time || '') + " " + o.seats + "seats KES" + o.price + " " + o.rating + " star " + contact;
-    }).join('\n');
+        var contact = cleanContactNumber(o.phone);
+        return (i + 1) + ". " + o.from + " -> " + o.to + " (" + (o.date || 'Today') + " " + (o.time || '') + ") " + o.seats + " seats - KES " + o.price + " (" + o.rating + "★)\nContact: " + contact;
+    }).join('\n\n');
 }
 
 async function handleRideLogic(phoneJid, text) {
     try {
-        if (['hi', 'hello', 'sasa', 'niaje', 'hey'].includes(text.toLowerCase().trim())) {
-            await sendGupshupMessage(phoneJid, "Welcome to Rideschat Kenya!\n\nHow to use:\nRIDER: Need ride Juja to Nairobi tomorrow 5pm\nDRIVER: Driver ON near Juja\nTo accept: TAKE 1\nRate: 5 stars");
-            return;
+        const lowerText = text.toLowerCase().trim();
+        
+        // Suppress repeated greetings/menus on simple conversational acknowledgments
+        const acknowledgements = ['okay', 'ok', 'cool', 'thanks', 'asante', 'got it', 'sure', 'alright', 'thx', '👍'];
+        if (acknowledgements.includes(lowerText)) {
+            return; // Soft silence on basic acknowledgments
         }
+
         var user = await User.getOrCreate(phoneJid);
         var ai = await parseWithAI(text);
         console.log("[" + phoneJid + "] -> AI: " + JSON.stringify(ai));
 
-        if (ai.role === 'greeting' || (!ai.from && !ai.to && (!ai.command || ai.command === 'null' || ai.command === null))) {
-            await sendGupshupMessage(phoneJid, "Welcome to Rideschat Kenya!\n\nHow to use:\nRIDER: Need ride Juja to Nairobi tomorrow 5pm\nDRIVER: Driver ON near Juja\nTo accept: TAKE 1\nRate: 5 stars");
+        // Use AI dynamically generated dynamic conversational responses for chatter/greetings
+        if (ai.role === 'chat' || ai.role === 'greeting' || (!ai.from && !ai.to && (!ai.command || ai.command === 'null' || ai.command === null))) {
+            var chatReply = ai.reply || "Sasa! Welcome to Rideschat Kenya 🇰🇪\n\nNeed a ride or offering seats? Just text where you're heading (e.g., 'Need ride Juja to Nairobi tomorrow 5pm' or 'Driver ON near Juja').";
+            await sendGupshupMessage(phoneJid, chatReply);
             return;
         }
+
         if (ai.role === 'rider' && (!ai.from || !ai.to)) {
-            await sendGupshupMessage(phoneJid, "Where to where? Example: Need ride Juja to Thika tomorrow 5pm");
+            await sendGupshupMessage(phoneJid, "Where are you coming from and where to? Example: 'Need ride Juja to Thika tomorrow 5pm'");
             return;
         }
+
         if (ai.role === 'command') {
             if (ai.command === 'ONLINE') {
                 await user.setOnline(ai.from || "Juja", 2);
                 var nearby = await RideRequest.getNearby(user.location);
-                await sendGupshupMessage(phoneJid, "Rideschat: ONLINE 2hrs near " + user.location + " on " + (ai.date || 'today') + "\nRating: " + user.rating.toFixed(1) + " star\n" + formatRequests(nearby) + "\nType TAKE <id> to accept ride");
+                await sendGupshupMessage(phoneJid, "Rideschat: ONLINE 2hrs near " + user.location + " (" + (ai.date || 'Today') + ")\nRating: " + user.rating.toFixed(1) + "★\n\n" + formatRequests(nearby) + "\n\nReply TAKE <id> to accept a ride.");
             }
             if (ai.command === 'OFFLINE') {
                 await user.setOffline();
-                await sendGupshupMessage(phoneJid, "Rideschat: OFFLINE. You won't get ride alerts.");
+                await sendGupshupMessage(phoneJid, "Rideschat: You are now OFFLINE. You won't get new ride alerts.");
             }
             if (ai.command === 'SHOW_REQUESTS') {
                 var nearby2 = await RideRequest.getNearby("Juja");
-                await sendGupshupMessage(phoneJid, "Rides near Juja:\n" + formatRequests(nearby2));
+                await sendGupshupMessage(phoneJid, "Rides near Juja:\n\n" + formatRequests(nearby2));
             }
             if (ai.command === 'TAKE') {
                 var ride = await RideRequest.findById(ai.takeId);
                 if (ride) {
                     await ride.updateStatus("TAKEN");
-                    await sendGupshupMessage(phoneJid, "You claimed ride " + ride.id + ". Rider: " + ride.phone + " - Call them now!");
-                    await sendGupshupMessage(ride.phone, "Driver on the way! " + user.phone + " Rating: " + user.rating.toFixed(1) + " star - Contact: " + phoneJid + "\nFrom: " + ride.from + " To: " + ride.to);
+                    await sendGupshupMessage(phoneJid, "You claimed ride #" + ride.id + "!\nRider Contact: " + cleanContactNumber(ride.phone));
+                    await sendGupshupMessage(ride.phone, "Driver on the way!\nDriver Rating: " + user.rating.toFixed(1) + "★\nContact: " + cleanContactNumber(phoneJid) + "\nRoute: " + ride.from + " to " + ride.to);
                 } else {
                     await sendGupshupMessage(phoneJid, "Ride ID " + ai.takeId + " not found or already taken.");
                 }
             }
             if (ai.command === 'RATING') {
                 await user.addRating(ai.rating);
-                await sendGupshupMessage(phoneJid, "Thanks! You rated " + ai.rating + " star");
+                await sendGupshupMessage(phoneJid, "Thanks for the feedback! Rated " + ai.rating + " stars.");
             }
             return;
         }
+
         if (ai.role === 'rider') {
             var rideReq = await RideRequest.createCustom(phoneJid, ai);
             var matches = await RideOffer.perfectMatch(rideReq);
+            var displayDate = rideReq.date || 'Today';
+
             if (matches && matches.length > 0) {
-                await sendGupshupMessage(phoneJid, "Rideschat: Found " + matches.length + " driver(s) for " + rideReq.date + " " + (rideReq.time || '') + "\n" + formatOffers(matches));
+                await sendGupshupMessage(phoneJid, "Rideschat: Found " + matches.length + " driver(s) for " + displayDate + " " + (rideReq.time || '') + "\n\n" + formatOffers(matches));
             } else {
-                await sendGupshupMessage(phoneJid, "Rideschat: Booked! No driver online yet for " + rideReq.from + "->" + rideReq.to + " on " + rideReq.date + " " + (rideReq.time || '') + ". We will alert drivers near you.");
+                await sendGupshupMessage(phoneJid, "Rideschat: Booked! Search registered for " + rideReq.from + " -> " + rideReq.to + " (" + displayDate + " " + (rideReq.time || '') + "). We'll alert available drivers!");
                 var drivers = await User.getOnlineNearby(rideReq.from);
                 for (var j = 0; j < drivers.length; j++) {
-                    await sendGupshupMessage(drivers[j].phone, "NEW RIDE near you! " + rideReq.from + "->" + rideReq.to + " " + rideReq.date + " " + (rideReq.time || '') + " Bags:" + rideReq.bags + " \nTAKE " + rideReq.id + " to accept\nRider: " + phoneJid);
+                    await sendGupshupMessage(drivers[j].phone, "NEW RIDE ALERT near you!\nRoute: " + rideReq.from + " -> " + rideReq.to + " (" + displayDate + " " + (rideReq.time || '') + ")\nBags: " + rideReq.bags + "\nReply TAKE " + rideReq.id + " to accept!");
                 }
             }
             return;
         }
+
         if (ai.role === 'driver') {
             var offer = await RideOffer.createCustom(phoneJid, ai);
             var riders = await RideRequest.getMatchingRiders(offer);
+            var displayOfferDate = offer.date || 'Today';
+
             if (riders.length > 0) {
-                await sendGupshupMessage(phoneJid, "Rideschat: " + riders.length + " rider(s) need " + offer.date + "!\n" + formatRequests(riders));
+                await sendGupshupMessage(phoneJid, "Rideschat: " + riders.length + " rider(s) found for " + displayOfferDate + "!\n\n" + formatRequests(riders));
             } else {
-                await sendGupshupMessage(phoneJid, "Offer posted: " + offer.from + "->" + offer.to + " " + offer.date + " " + (offer.time || '') + " - Waiting for riders.");
+                await sendGupshupMessage(phoneJid, "Offer posted: " + offer.from + " -> " + offer.to + " (" + displayOfferDate + " " + (offer.time || '') + "). Waiting for riders.");
             }
         }
     } catch (err) {
