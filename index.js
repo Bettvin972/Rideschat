@@ -34,7 +34,6 @@ function killChatFor(phone) {
         }
     }
 }
-
 function getNairobiNow() { return new Date(new Date().toLocaleString('en-US', { timeZone: 'Africa/Nairobi' })); }
 function getTimeGreeting() {
     const h = getNairobiNow().getHours();
@@ -57,7 +56,7 @@ function getRealTime(aiTime) {
     const mm = String(now.getMinutes()).padStart(2,'0');
     if (!aiTime) return `${hh}:${mm}`;
     let l = aiTime.toString().toLowerCase().trim();
-    if (['now','asap','now now'].includes(l)) return `${hh}:${mm}`;
+    if (['now','asap'].includes(l)) return `${hh}:${mm}`;
     let m = l.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/);
     if (m) { let h=parseInt(m[1]); let min=parseInt(m[2]||'0'); let ap=m[3]; if(ap==='pm'&&h<12)h+=12; if(ap==='am'&&h===12)h=0; return `${String(h).padStart(2,'0')}:${String(min).padStart(2,'0')}`; }
     return `${hh}:${mm}`;
@@ -79,7 +78,7 @@ function parseTimeQuick(input) {
     if (!input) return null;
     let t = input.toLowerCase().trim();
     const now = getNairobiNow();
-    if (['now','now now','asap'].includes(t)) return `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+    if (['now','asap'].includes(t)) return `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
     if (t==='tomorrow') return '09:00';
     let m = t.match(/^(\d{1,2})(\s*(am|pm))?$/);
     if (m) { let h=parseInt(m[1]); let ap=m[3]; if(ap==='pm'&&h<12)h+=12; if(ap==='am'&&h===12)h=0; return `${String(h).padStart(2,'0')}:00`; }
@@ -89,12 +88,7 @@ function parseTimeQuick(input) {
 }
 function isSimpleLocation(txt) {
     const t = txt.toLowerCase().trim();
-    const block = [
-        'hi','hey','hello','need','ride','offer','driver','car','online','offline','filter','clear','next','now','today','tomorrow',
-        'thanks','thank','thank you','thankyou','ok','okay','yes','yeah','yep','cool','thx',
-        'need offer','offer ride','need to offer','i need','available','requests','show','all','see','my','trip','accept','take','end ride',
-        'who are you','what are you','help','what can you do','how does it work','what is','who is','where is','how can','how to','rate','rating'
-    ];
+    const block = ['hi','hey','hello','need','ride','offer','driver','car','online','offline','filter','clear','next','now','today','tomorrow','thanks','thank','thank you','ok','okay','yes','yeah','yep','cool','thx','available','requests','show','all','see','my','trip','accept','take','end ride','who are you','what are you','help','what can you do','how does it work','what is','who is','where is','how can','how to','rate','rating'];
     if (block.some(b => t===b || t.startsWith(b+' ') || t.includes(b))) return false;
     if (t.length < 3 || t.length > 25) return false;
     if (/^\d+$/.test(t)) return false;
@@ -103,12 +97,11 @@ function isSimpleLocation(txt) {
     if (t.split(' ').length > 3) return false;
     return true;
 }
-
 async function startWhatsApp() {
     if (!fs.existsSync(AUTH_PATH)) fs.mkdirSync(AUTH_PATH, { recursive: true });
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_PATH);
     const { version } = await fetchLatestBaileysVersion();
-    sock = makeWASocket({ version, auth: state, logger: pino({ level: 'silent' }), browser: ["Rideschat","Chrome","1.0"], shouldSyncHistoryMessage: () => false, syncFullHistory: false, markOnlineOnConnect: false, getMessage: async () => undefined });
+    sock = makeWASocket({ version, auth: state, logger: pino({ level: 'silent' }), browser: ["Bett","Chrome","1.0"], shouldSyncHistoryMessage: () => false, syncFullHistory: false, markOnlineOnConnect: false, getMessage: async () => undefined });
     sock.ev.on('creds.update', saveCreds);
     sock.ev.on('connection.update', async (u) => {
         const { connection, lastDisconnect, qr } = u;
@@ -144,8 +137,7 @@ async function startWhatsApp() {
     });
 }
 startWhatsApp();
-
-var SYSTEM_PROMPT = `You are Rideschat Kenya. Current: {TODAY_INFO} [{TODAY_DATE}] {GREETING}. Draft: {CONTEXT_DRAFT}
+var SYSTEM_PROMPT = `You are Bett, a student ride-sharing assistant in Kenya. Current: {TODAY_INFO} [{TODAY_DATE}] {GREETING}. Draft: {CONTEXT_DRAFT}
 Classify:
 1. CHITCHAT: Hi, Who are you, What can you do, Help, How does it work, What is a baboon, Where is Kenya parliament -> {"role":"chat"}
 2. RIDE: Extract from/to/date/time - "from Juja to Thika now", "Juja to Thika at 9am today" -> {"role":"rider", from, to}
@@ -153,7 +145,6 @@ Classify:
 Return ONLY JSON:
 {"role":"rider|driver|command|chat","command":"ONLINE|OFFLINE|SHOW_REQUESTS|TAKE|FILTER|CLEAR_FILTERS|NEXT|null","filter":string|null,"takeId":number|null,"from":string|null,"to":string|null,"date":"today|tomorrow|null","time":"HH:MM|now|null","seats":number|null}
 `;
-
 async function parseWithAI(msg, contextDraft={}) {
     var now = getNairobiNow();
     var todayInfo = now.toLocaleDateString('en-US',{weekday:'long'})+" "+now.toISOString().split('T')[0]+" "+now.toLocaleTimeString('en-KE',{hour:'2-digit',minute:'2-digit'});
@@ -174,52 +165,45 @@ async function parseWithAI(msg, contextDraft={}) {
         } catch(e) { if (i===models.length-1) throw e; }
     }
 }
-
 async function answerGeneralQuestion(q, loc="Juja") {
     const lower = q.toLowerCase().trim();
     if (!lower || lower.length <= 2) return null;
     if (/^\d+$/.test(lower)) return null;
-    if (['accept'].includes(lower)) return null;
     try {
         const greeting = getTimeGreeting();
-        let sys = `You are Rideschat Kenya - WhatsApp ride-sharing bot in Kenya. Respond ONLY in English.
+        let sys = `You are Bett - a student ride-sharing assistant in Kenya. Your name is Bett. You were created to help students connect with rides quickly and affordably. Respond ONLY in English.
 
-GOAL: Be helpful for general knowledge but always bring back to rides.
+IDENTITY:
+- Name: Bett
+- Purpose: Connect students with rides in Kenya (Juja, Thika, Nairobi, etc.)
+- You help students find affordable rides to campus, town, home.
+- If asked "Who are you?" -> "I'm Bett! I help students in Kenya connect with affordable rides. Whether you need a ride to campus or town, just say 'Need a ride from Juja to Thika now' and I'll link you with drivers. Drivers say 'Online' to see requests."
 
 RULES:
-- You connect RIDERS and DRIVERS.
-- RIDER says: "Need a ride from Juja to Thika now"
-- DRIVER says: "Online" to see open rides, then "4" or "TAKE 4" to accept
-- When matched, rider and driver chat here. Say "END RIDE" to close.
+- RIDER: "Need a ride from Juja to Thika now"
+- DRIVER: "Online" to see rides, then "4" or "TAKE 4"
+- When matched, chat here. Say "END RIDE" to close.
 
-RESPONSE STYLE:
-- 2-3 lines max, friendly English only, no emojis.
-- For Rideschat questions (Who are you / Help / How does it work): Explain Rideschat.
-  Example: "I'm Rideschat! I connect riders and drivers in Kenya. Riders say 'Need a ride from X to Y', drivers say 'Online' to see requests."
-- For general knowledge (What is a baboon? Where is parliament? Thank you?):
-  Answer in 1 short factual English sentence, then add redirect to rides in second sentence.
-  Q: "What is a baboon?" -> A: "A baboon is a large African monkey that lives in troops. Need a ride? Say 'Need a ride from Juja to Thika now'."
-  Q: "Where is Kenya parliament?" -> A: "Kenya's Parliament is on Parliament Road in Nairobi CBD. Need a ride there? Just tell me where you're coming from."
-  Q: "Thank you" -> A: "You're welcome! Need another ride? Say 'Need a ride from X to Y' or say 'Online' if you're a driver."
-  Q: "How are you?" -> A: "${greeting}! I'm doing well and ready to connect you to a ride. Where are you riding from today?"
-- For personal data like "Where is John?" (a person): Say you don't have personal location data, but you can help them get a ride if they share location.
-- Never be rude, always redirect to rides in English.
+STYLE: 2-3 lines max, friendly English only, student-friendly.
+For general knowledge:
+Answer in 1 short factual English sentence, then redirect to student rides.
+Examples:
+"What is a baboon?" -> "A baboon is a large African monkey that lives in troops. I'm Bett, here to help students with rides - need a ride? Say 'Need a ride from Juja to Thika now'."
+"What is a pen?" -> "A pen is a writing tool that uses ink. I'm Bett, your student ride connector - need a ride to campus? Just say where from and where to."
+"Thank you" -> "You're welcome! I'm Bett, always here to connect you with rides. Need another ride? Say 'Need a ride from X to Y' or 'Online' if you're driving."
+"How are you?" -> "${greeting}! I'm Bett, doing well and ready to help students get rides. Where are you riding from today?"
 
-Location context: ${loc}
-Current time: ${getNairobiNow().toLocaleTimeString()}`;
-
+Location: ${loc}`;
         const res = await axios.post("https://api.groq.com/openai/v1/chat/completions", {
             model: "openai/gpt-oss-20b",
             messages: [{role:"system",content:sys},{role:"user",content:q}],
-            temperature:0.6,
-            max_tokens: 200
+            temperature:0.5, max_tokens: 200
         }, { headers:{ "Authorization":`Bearer ${process.env.GROQ_API_KEY}` } });
         return res.data.choices[0].message.content.trim();
     } catch(e) {
-        return `${getTimeGreeting()}! I'm Rideschat - I connect riders and drivers in Kenya. Need a ride? Say: Need a ride from Juja to Thika now. Driver? Say: Online`;
+        return `${getTimeGreeting()}! I'm Bett - I help students connect with affordable rides in Kenya. Need a ride? Say: Need a ride from Juja to Thika now. Driver? Say: Online`;
     }
 }
-
 async function sendGupshupMessage(toJid, txt) {
     if (!toJid||!sock) return;
     try { let jid = toJid.includes('@')?toJid:toJid.replace('+','').trim()+'@s.whatsapp.net'; await sock.sendMessage(jid,{text:txt}); } catch(e){console.error(e.message);}
@@ -230,17 +214,13 @@ async function sendRidesList(toJid, rides, title="RIDES:") {
     let list = rides.slice(0,10).map(r => `#${r.id} ${r.from?.split(',')[0].substring(0,15)} -> ${r.to?.split(',')[0].substring(0,15)} | ${r.seats||1}p | ${toDisplayTime(r.time)}`).join('\n');
     await sendGupshupMessage(toJid, `${title}\n${list}\n\nReply ${firstId} or TAKE ${firstId} to accept`);
 }
-
 async function checkAndForwardChat(phoneJid, text, realPhone) {
     const userPhoneKey = realPhone || phoneJid;
     let chat = activeChats[userPhoneKey];
     if (!chat) return false;
     try {
         let ride = await RideRequest.findById(chat.rideId);
-        if (!ride || ride.status!=='TAKEN') {
-            killChatFor(userPhoneKey);
-            return false;
-        }
+        if (!ride || ride.status!=='TAKEN') { killChatFor(userPhoneKey); return false; }
         let other = chat.with;
         let sender = ride.phone===userPhoneKey? "Rider" : "Driver";
         let receiver = sender==="Rider"? "driver" : "rider";
@@ -249,12 +229,10 @@ async function checkAndForwardChat(phoneJid, text, realPhone) {
         return true;
     } catch(e){ return false; }
 }
-
 async function handleRideLogic(phoneJid, text, realPhone) {
     try {
         const lowerText = text.toLowerCase().trim();
         const userPhoneKey = realPhone||phoneJid;
-
         if (lowerText.includes('end ride') || ['complete','trip done','cancel ride','done','finished'].includes(lowerText)) {
             killChatFor(userPhoneKey);
             try {
@@ -265,23 +243,19 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             await sendGupshupMessage(phoneJid, "Trip ended. Chat closed.\nNeed another? Say: Need a ride");
             return;
         }
-
         if (!activeChats[userPhoneKey]) {
-            if (lowerText.includes('👍') || lowerText.includes('❤️') || lowerText.includes('😍')) {
-                if (lowerText.length < 5) return;
-            }
+            if (lowerText.includes('👍') || lowerText.includes('❤️') || lowerText.includes('😍')) { if (lowerText.length < 5) return; }
         }
-
-        const isNewStart = lowerText==='offline' || lowerText.startsWith('offline') || lowerText==='online' || lowerText.startsWith('online') || lowerText==='need a ride' || lowerText==='need ride' || lowerText.startsWith('need a ride') || lowerText.startsWith('filter ') || lowerText.includes('clear filter');
-        if (isNewStart) {
+        if (lowerText==='need a ride' || lowerText==='need ride' || lowerText.startsWith('need a ride') || lowerText==='i need a ride') {
             killChatFor(userPhoneKey);
-            if (lowerText.includes('need a ride') || lowerText==='need ride') clearSession(userPhoneKey);
+            clearSession(userPhoneKey);
+            getSession(userPhoneKey).draft.role='rider';
+            await sendGupshupMessage(phoneJid, `Got it! Where are you riding from? Example: Juja`);
+            return;
         }
-
-        if (activeChats[userPhoneKey]) {
-            if (await checkAndForwardChat(phoneJid, text, realPhone)) return;
-        }
-
+        const isNewStart = lowerText==='offline' || lowerText.startsWith('offline') || lowerText==='online' || lowerText.startsWith('online') || lowerText.startsWith('filter ') || lowerText.includes('clear filter');
+        if (isNewStart) { killChatFor(userPhoneKey); clearSession(userPhoneKey); }
+        if (activeChats[userPhoneKey]) { if (await checkAndForwardChat(phoneJid, text, realPhone)) return; }
         if (isSimpleLocation(text)) {
             var user = await User.getOrCreate(userPhoneKey);
             var session = getSession(userPhoneKey);
@@ -296,7 +270,6 @@ async function handleRideLogic(phoneJid, text, realPhone) {
                 return;
             }
         }
-
         if (/^\d+$/.test(lowerText)) {
             let rideId = parseInt(lowerText,10);
             let ride = await RideRequest.findById(rideId);
@@ -313,7 +286,6 @@ async function handleRideLogic(phoneJid, text, realPhone) {
                 return;
             } else { await sendGupshupMessage(phoneJid, `Ride #${rideId} already taken`); return; }
         }
-
         if (lowerText.includes('offer') && lowerText.includes('ride')) {
             let u = await User.getOrCreate(userPhoneKey);
             await u.setOnline("Juja",2);
@@ -338,7 +310,6 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             let nearby = await RideRequest.getNearby(u.location||'Juja');
             await sendRidesList(phoneJid, nearby, `Filters cleared`); return;
         }
-
         const takeMatch = lowerText.match(/^take[_\s]*(\d+)$/i);
         if (takeMatch) {
             let rideId = parseInt(takeMatch[1],10);
@@ -352,10 +323,8 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             await sendGupshupMessage(ride.phone, `DRIVER FOUND #${ride.id} ${ride.from} -> ${ride.to}\nDriver: ${getDirectChatLink(userPhoneKey)}`);
             return;
         }
-
         var user2 = await User.getOrCreate(userPhoneKey);
         var session2 = getSession(userPhoneKey);
-
         if (session2.draft.from && session2.draft.to &&!session2.draft.time) {
             let qt = parseTimeQuick(lowerText);
             if (qt) {
@@ -368,16 +337,12 @@ async function handleRideLogic(phoneJid, text, realPhone) {
                 var filtered = drvs.filter(d=>{var dc=(d.phone||'').split('@')[0].replace(/[^0-9]/g,''); return dc!==clean;});
                 for (let d of filtered) await sendGupshupMessage(d.phone, `#${rr.id} ${rr.from} → ${rr.to} | ${toDisplayTime(rr.time)}\nReply ${rr.id} or TAKE ${rr.id}`);
                 clearSession(userPhoneKey); return;
-            } else {
-                await sendGupshupMessage(phoneJid, `What time? Reply Now or 9 AM`);
-                return;
-            }
+            } else { await sendGupshupMessage(phoneJid, `What time? Reply Now or 9 AM`); return; }
         }
-
         var ai = await parseWithAI(text, session2.draft);
         if (ai.role==='chat') {
             let reply = await answerGeneralQuestion(text, user2.location||session2.draft.from||"Juja");
-            if (!reply) reply = `${getTimeGreeting()}! I'm Rideschat — I connect riders and drivers. Say: Need a ride from Juja to Thika now, or say Online if you're a driver.`;
+            if (!reply) reply = `${getTimeGreeting()}! I'm Bett — I help students connect with affordable rides. Say: Need a ride from Juja to Thika now, or say Online if you're a driver.`;
             await sendGupshupMessage(phoneJid, reply);
             return;
         }
@@ -396,7 +361,7 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             return;
         }
         if (session2.draft.role==='rider' && (!session2.draft.from||!session2.draft.to)) {
-            if (!session2.draft.from) await sendGupshupMessage(phoneJid, `WHERE FROM? Example: Juja`);
+            if (!session2.draft.from) await sendGupshupMessage(phoneJid, `Where are you riding from? Example: Juja`);
             else await sendGupshupMessage(phoneJid, `Okay, from ${session2.draft.from} — where to?`);
             return;
         }
@@ -412,12 +377,10 @@ async function handleRideLogic(phoneJid, text, realPhone) {
         }
     } catch(err){ console.error('Error:',err.stack||err.message); }
 }
-
 setInterval(async()=>{ try{ if (RideRequest.clearExpired) await RideRequest.clearExpired(); }catch(e){} },15*60*1000);
-
 app.get('/qr',(req,res)=>{ if (!qrLast) return res.send("<h1>Connected!</h1>"); var qrImage="https://api.qrserver.com/v1/create-qr-code/?size=300x300&data="+encodeURIComponent(qrLast); res.send(`<h1>Scan</h1><img src='${qrImage}'/>`); });
 app.get('/ping',(req,res)=>{ res.send("Alive"); });
-app.get('/',(req,res)=>{ res.send("Rideschat LIVE - /qr"); });
+app.get('/',(req,res)=>{ res.send("Bett LIVE - Student Rides - /qr"); });
 app.get('/clearall', async (req,res)=>{
     await RideRequest.destroy({ where: {} });
     await RideOffer.destroy({ where: {} });
@@ -426,6 +389,5 @@ app.get('/clearall', async (req,res)=>{
     res.send("All rides deleted + memory cleared");
 });
 app.get('/cleardb', async (req,res)=>{ await sequelize.sync({ force: true }); res.send("Full DB wiped"); });
-
 var PORT = process.env.PORT||10000;
-app.listen(PORT,()=>{ console.log("Running on "+PORT); });
+app.listen(PORT,()=>{ console.log("Bett Running on "+PORT); });
