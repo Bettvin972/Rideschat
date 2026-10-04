@@ -49,7 +49,7 @@ function getNextWeekday(targetDay) {
     if (target === -1) return null;
     let result = new Date(now);
     let diff = target - now.getDay();
-    if (diff <= 0) diff += 7; // next week
+    if (diff <= 0) diff += 7;
     result.setDate(now.getDate() + diff);
     return result.toISOString().split('T')[0];
 }
@@ -57,26 +57,16 @@ function getRealDate(aiDate) {
     if (!aiDate) return getNairobiNow().toISOString().split('T')[0];
     const now = getNairobiNow();
     const s = aiDate.toString().toLowerCase().trim();
-
-    if (s.includes('day after tomorrow')) {
-        let t = new Date(now); t.setDate(now.getDate()+2); return t.toISOString().split('T')[0];
-    }
-    if (s.includes('tomorrow')) {
-        let t = new Date(now); t.setDate(now.getDate()+1); return t.toISOString().split('T')[0];
-    }
-    if (s.includes('today') || s.includes('now') || s.includes('asap') || s==='null') {
-        return now.toISOString().split('T')[0];
-    }
-    // weekdays
+    if (s.includes('day after tomorrow')) { let t = new Date(now); t.setDate(now.getDate()+2); return t.toISOString().split('T')[0]; }
+    if (s.includes('tomorrow')) { let t = new Date(now); t.setDate(now.getDate()+1); return t.toISOString().split('T')[0]; }
+    if (s.includes('today') || s.includes('now') || s.includes('asap') || s==='null') return now.toISOString().split('T')[0];
     const weekdays = ['monday','tuesday','wednesday','thursday','friday','saturday','sunday'];
     for (let d of weekdays) {
         if (s.includes(d)) {
-            // if says "this friday" and today is before friday, use this week, else next week
             if (s.includes('this')) {
                 let target = weekdays.indexOf(d);
-                let today = now.getDay(); // 0=Sun
-                let jsTarget = target === 6? 0 : target+1; // convert mon=0 to js
-                // simplified: just use next occurrence if "this" is past, today otherwise
+                let today = now.getDay();
+                let jsTarget = target === 6? 0 : target+1;
                 let diff = jsTarget - today;
                 if (diff < 0) diff += 7;
                 let result = new Date(now); result.setDate(now.getDate()+diff);
@@ -85,7 +75,6 @@ function getRealDate(aiDate) {
             return getNextWeekday(d);
         }
     }
-    // if already YYYY-MM-DD
     if (s.match(/^\d{4}-\d{2}-\d{2}$/)) return s;
     return s;
 }
@@ -114,7 +103,6 @@ function toDisplayDate(d) {
     const tomorrow = tom.toISOString().split('T')[0];
     if (d === today) return 'Today';
     if (d === tomorrow) return 'Tomorrow';
-    // Show weekday
     let date = new Date(d);
     return date.toLocaleDateString('en-US',{weekday:'long'}) + ' ' + d;
 }
@@ -128,18 +116,12 @@ function parseTimeQuick(input) {
     if (!input) return null;
     let t = input.toLowerCase().trim();
     const now = getNairobiNow();
-    // Find time anywhere: "tomorrow at 6 pm", "friday 9am", "10:30 pm tomorrow"
     let m = t.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)/);
-    if (m) {
-        let h=parseInt(m[1]); let min=parseInt(m[2]||'0'); let ap=m[3];
-        if(ap==='pm'&&h<12)h+=12; if(ap==='am'&&h===12)h=0;
-        return `${String(h).padStart(2,'0')}:${String(min).padStart(2,'0')}`;
-    }
+    if (m) { let h=parseInt(m[1]); let min=parseInt(m[2]||'0'); let ap=m[3]; if(ap==='pm'&&h<12)h+=12; if(ap==='am'&&h===12)h=0; return `${String(h).padStart(2,'0')}:${String(min).padStart(2,'0')}`; }
     let m2 = t.match(/(\d{1,2}):(\d{2})/);
     if (m2) return `${String(parseInt(m2[1])).padStart(2,'0')}:${String(parseInt(m2[2])).padStart(2,'0')}`;
     if (['now','asap'].includes(t)) return `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
     if (t==='tomorrow') return '09:00';
-    // If input is just a weekday without time, default to 9 AM
     const weekdays = ['monday','tuesday','wednesday','thursday','friday','saturday','sunday'];
     if (weekdays.some(d=>t.includes(d)) &&!t.match(/\d/)) return '09:00';
     return null;
@@ -224,24 +206,43 @@ async function parseWithAI(msg, contextDraft={}) {
         } catch(e) { if (i===models.length-1) throw e; }
     }
 }
+// PERFECT GENERAL ANSWERS - detailed, not short, no Juja spam
 async function answerGeneralQuestion(q, loc="Juja") {
     const lower = q.toLowerCase().trim();
     if (!lower || lower.length <= 2) return null;
     if (/^\d+$/.test(lower)) return null;
+
     if (['thanks','thank you','thankyou','asante','asante sana','thx'].includes(lower)) return "You're welcome!";
-    if (['ok','okay','sawa','poa','cool','nice','great','alright'].includes(lower)) return "Got it!";
-    if (['hi','hey','hello'].includes(lower)) return `${getTimeGreeting()}! I'm Bett - I help students with rides.`;
+    if (lower.startsWith('okay') || ['ok','okay','sawa','poa','cool','nice','great','alright'].includes(lower)) return "Got it!";
+    if (['hi','hey','hello','niaje','mambo'].includes(lower)) return `${getTimeGreeting()}! I'm Bett - I help students with rides.`;
     if (lower.includes('who are you') || lower.includes('what are you')) return "I'm Bett! I help students in Kenya connect with affordable rides.";
-    if (lower.includes('help') || lower.includes('what can you do') || lower.includes('how does it work')) return "I'm Bett! I connect students with drivers. Need a ride? Tell me where from and where to. Driver? Say Online.";
+    if (lower.includes('is there any driver') || lower.includes('any drivers') || lower.includes('are there drivers')) {
+        return "Yes, we have drivers online! If you need a ride, just say Need a ride and tell me where from and where to. If you're a driver, say ONLINE to see ride requests.";
+    }
+    if (lower.includes('help') || lower.includes('what can you do') || lower.includes('how does it work')) {
+        return "I'm Bett! I connect students who need rides with drivers. Riders: Say 'Need a ride' and tell me your route and time. Drivers: Say 'Online' to see nearby requests and reply with the ride number to accept.";
+    }
+
     try {
-        let sys = `You are Bett, student ride assistant. Rules: Respond in English only, 1 short sentence max, NO example like "Juja to Thika", NO emoji. Be brief.`;
+        let sys = `You are Bett, a friendly knowledgeable assistant.
+Rules:
+- Answer in clear, correct English
+- Give a perfect, complete answer in 2-4 sentences
+- Be informative, not too short
+- For capitals, presidents, facts - give full context with dates and location
+- Do NOT say "Juja to Thika", do NOT say "I'll link you with drivers", do NOT add ride example
+- No emojis
+- Location context: ${loc}`;
+
         const res = await axios.post("https://api.groq.com/openai/v1/chat/completions", {
             model: "openai/gpt-oss-20b",
             messages: [{role:"system",content:sys},{role:"user",content:q}],
-            temperature:0.5, max_tokens: 60
+            temperature:0.4, max_tokens: 250
         }, { headers:{ "Authorization":`Bearer ${process.env.GROQ_API_KEY}` } });
         return res.data.choices[0].message.content.trim();
-    } catch(e) { return "I'm Bett - I help students with rides."; }
+    } catch(e) {
+        return null;
+    }
 }
 async function sendGupshupMessage(toJid, txt) {
     if (!toJid||!sock) return;
@@ -271,6 +272,7 @@ async function checkAndForwardChat(phoneJid, text, realPhone) {
 async function handleRideLogic(phoneJid, text, realPhone) {
     try {
         const lowerText = text.toLowerCase().trim();
+        if (lowerText.length < 3) return;
         const userPhoneKey = realPhone||phoneJid;
         if (lowerText.includes('end ride') || ['complete','trip done','cancel ride','done','finished'].includes(lowerText)) {
             killChatFor(userPhoneKey);
