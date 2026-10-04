@@ -86,11 +86,14 @@ function parseTimeQuick(input) {
     if (m2) { let h=parseInt(m2[1]); let min=parseInt(m2[2]); let ap=m2[4]; if(ap==='pm'&&h<12)h+=12; if(ap==='am'&&h===12)h=0; return `${String(h).padStart(2,'0')}:${String(min).padStart(2,'0')}`; }
     return null;
 }
+// FIXED: No more substring blocking - Thika will work now
 function isSimpleLocation(txt) {
     const t = txt.toLowerCase().trim();
-    const block = ['hi','hey','hello','need','ride','offer','driver','car','online','offline','filter','clear','next','now','today','tomorrow','thanks','thank','thank you','ok','okay','yes','yeah','yep','cool','thx','available','requests','show','all','see','my','trip','accept','take','end ride','who are you','what are you','help','what can you do','how does it work','what is','who is','where is','how can','how to','rate','rating'];
-    if (block.some(b => t===b || t.startsWith(b+' ') || t.includes(b))) return false;
-    if (t.length < 3 || t.length > 25) return false;
+    const exactBlock = ['hi','hey','hello','need','ride','offer','driver','car','online','offline','filter','clear','next','now','today','tomorrow','thanks','thank','thank you','ok','okay','yes','yeah','yep','cool','thx','available','requests','show','all','see','my','trip','accept','take','end ride','who are you','what are you','help','what can you do','how does it work','what is','who is','where is','how can','how to','rate','rating','need a ride','need ride','i need a ride'];
+    if (exactBlock.includes(t)) return false;
+    // Let AI handle long sentences like "I need a ride to Thika how can I access?"
+    if (t.includes('how can i') || t.includes('need a ride to') || t.length > 30) return false;
+    if (t.length < 3 || t.length > 30) return false;
     if (/^\d+$/.test(t)) return false;
     if (parseTimeQuick(t)) return false;
     if (!/^[a-zA-Z\s]+$/.test(t)) return false;
@@ -140,7 +143,7 @@ startWhatsApp();
 var SYSTEM_PROMPT = `You are Bett, a student ride-sharing assistant in Kenya. Current: {TODAY_INFO} [{TODAY_DATE}] {GREETING}. Draft: {CONTEXT_DRAFT}
 Classify:
 1. CHITCHAT: Hi, Who are you, What can you do, Help, How does it work, What is a baboon, Where is Kenya parliament -> {"role":"chat"}
-2. RIDE: Extract from/to/date/time - "from Juja to Thika now", "Juja to Thika at 9am today" -> {"role":"rider", from, to}
+2. RIDE: Extract from/to/date/time - "from Juja to Thika now", "Juja to Thika at 9am today", "need a ride to Thika", "Makongeni to Thika" -> {"role":"rider", from, to}
 3. COMMAND: TAKE 1, ONLINE, OFFLINE, FILTER Juja, CLEAR FILTERS -> {"role":"command"}
 Return ONLY JSON:
 {"role":"rider|driver|command|chat","command":"ONLINE|OFFLINE|SHOW_REQUESTS|TAKE|FILTER|CLEAR_FILTERS|NEXT|null","filter":string|null,"takeId":number|null,"from":string|null,"to":string|null,"date":"today|tomorrow|null","time":"HH:MM|now|null","seats":number|null}
@@ -172,27 +175,9 @@ async function answerGeneralQuestion(q, loc="Juja") {
     try {
         const greeting = getTimeGreeting();
         let sys = `You are Bett - a student ride-sharing assistant in Kenya. Your name is Bett. You were created to help students connect with rides quickly and affordably. Respond ONLY in English.
-
-IDENTITY:
-- Name: Bett
-- Purpose: Connect students with rides in Kenya (Juja, Thika, Nairobi, etc.)
-- You help students find affordable rides to campus, town, home.
-- If asked "Who are you?" -> "I'm Bett! I help students in Kenya connect with affordable rides. Whether you need a ride to campus or town, just say 'Need a ride from Juja to Thika now' and I'll link you with drivers. Drivers say 'Online' to see requests."
-
-RULES:
-- RIDER: "Need a ride from Juja to Thika now"
-- DRIVER: "Online" to see rides, then "4" or "TAKE 4"
-- When matched, chat here. Say "END RIDE" to close.
-
-STYLE: 2-3 lines max, friendly English only, student-friendly.
-For general knowledge:
-Answer in 1 short factual English sentence, then redirect to student rides.
-Examples:
-"What is a baboon?" -> "A baboon is a large African monkey that lives in troops. I'm Bett, here to help students with rides - need a ride? Say 'Need a ride from Juja to Thika now'."
-"What is a pen?" -> "A pen is a writing tool that uses ink. I'm Bett, your student ride connector - need a ride to campus? Just say where from and where to."
-"Thank you" -> "You're welcome! I'm Bett, always here to connect you with rides. Need another ride? Say 'Need a ride from X to Y' or 'Online' if you're driving."
-"How are you?" -> "${greeting}! I'm Bett, doing well and ready to help students get rides. Where are you riding from today?"
-
+IDENTITY: Name: Bett, Purpose: Connect students with rides in Kenya. If asked "Who are you?" -> "I'm Bett! I help students in Kenya connect with affordable rides. Whether you need a ride to campus or town, just say 'Need a ride from Juja to Thika now' and I'll link you with drivers. Drivers say 'Online' to see requests."
+RULES: RIDER: "Need a ride from Juja to Thika now", DRIVER: "Online" to see rides, then "4" or "TAKE 4", When matched, chat here. Say "END RIDE" to close.
+STYLE: 2-3 lines max, friendly English only, student-friendly. For general knowledge: Answer in 1 short factual English sentence, then redirect to student rides. Example: "What is a baboon?" -> "A baboon is a large African monkey that lives in troops. I'm Bett, here to help students with rides - need a ride? Say 'Need a ride from Juja to Thika now'."
 Location: ${loc}`;
         const res = await axios.post("https://api.groq.com/openai/v1/chat/completions", {
             model: "openai/gpt-oss-20b",
@@ -246,8 +231,29 @@ async function handleRideLogic(phoneJid, text, realPhone) {
         if (!activeChats[userPhoneKey]) {
             if (lowerText.includes('👍') || lowerText.includes('❤️') || lowerText.includes('😍')) { if (lowerText.length < 5) return; }
         }
-        if (lowerText==='need a ride' || lowerText==='need ride' || lowerText.startsWith('need a ride') || lowerText==='i need a ride') {
+        if (lowerText==='need a ride' || lowerText==='need ride' || lowerText.startsWith('need a ride') || lowerText==='i need a ride' || lowerText.includes('i need a ride to')) {
+            // Extract "to Thika" if present
+            let toMatch = lowerText.match(/to\s+([a-z]+)/);
+            let fromMatch = lowerText.match(/from\s+([a-z]+)/);
+            let session = getSession(userPhoneKey);
             killChatFor(userPhoneKey);
+            if (!fromMatch &&!toMatch) {
+                clearSession(userPhoneKey);
+                getSession(userPhoneKey).draft.role='rider';
+                await sendGupshupMessage(phoneJid, `Got it! Where are you riding from? Example: Juja`);
+                return;
+            }
+            if (fromMatch && toMatch) {
+                session.draft = { role:'rider', from: fromMatch[1].charAt(0).toUpperCase()+fromMatch[1].slice(1), to: toMatch[1].charAt(0).toUpperCase()+toMatch[1].slice(1) };
+                await sendGupshupMessage(phoneJid, `Got it, ${session.draft.from} → ${session.draft.to}. What time? Reply Now or 9 AM`);
+                return;
+            }
+            if (toMatch &&!session.draft.from) {
+                session.draft.role='rider';
+                session.draft.to = toMatch[1].charAt(0).toUpperCase()+toMatch[1].slice(1);
+                await sendGupshupMessage(phoneJid, `Got it, you need a ride to ${session.draft.to}. Where are you riding from?`);
+                return;
+            }
             clearSession(userPhoneKey);
             getSession(userPhoneKey).draft.role='rider';
             await sendGupshupMessage(phoneJid, `Got it! Where are you riding from? Example: Juja`);
@@ -256,6 +262,7 @@ async function handleRideLogic(phoneJid, text, realPhone) {
         const isNewStart = lowerText==='offline' || lowerText.startsWith('offline') || lowerText==='online' || lowerText.startsWith('online') || lowerText.startsWith('filter ') || lowerText.includes('clear filter');
         if (isNewStart) { killChatFor(userPhoneKey); clearSession(userPhoneKey); }
         if (activeChats[userPhoneKey]) { if (await checkAndForwardChat(phoneJid, text, realPhone)) return; }
+        // FIXED LOCATION HANDLER - Thika now works
         if (isSimpleLocation(text)) {
             var user = await User.getOrCreate(userPhoneKey);
             var session = getSession(userPhoneKey);
@@ -340,6 +347,25 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             } else { await sendGupshupMessage(phoneJid, `What time? Reply Now or 9 AM`); return; }
         }
         var ai = await parseWithAI(text, session2.draft);
+        // If AI detected a ride with from/to, use it
+        if (ai.role==='rider' && ai.from && ai.to) {
+            session2.draft.from = ai.from;
+            session2.draft.to = ai.to;
+            session2.draft.role='rider';
+            session2.draft.date = getRealDate(ai.date||'today');
+            session2.draft.time = getRealTime(ai.time||'now');
+            if (!session2.draft.time || session2.draft.time==='Flexible') {
+                await sendGupshupMessage(phoneJid, `Got it, ${session2.draft.from} → ${session2.draft.to}. What time? Reply Now or 9 AM`);
+                return;
+            }
+            var rideReq = await RideRequest.createCustom(userPhoneKey, session2.draft);
+            await sendGupshupMessage(phoneJid, `RIDE #${rideReq.id} CREATED\n${rideReq.from} → ${rideReq.to} ${toDisplayTime(rideReq.time)} Today\nAlerting drivers...`);
+            var drivers = await User.getOnlineNearby(rideReq.from);
+            var clean = userPhoneKey.split('@')[0].replace(/[^0-9]/g,'');
+            var f = drivers.filter(d=>{var dc=(d.phone||'').split('@')[0].replace(/[^0-9]/g,''); return dc!==clean;});
+            for (let d of f) await sendGupshupMessage(d.phone, `#${rideReq.id} ${rideReq.from} → ${rideReq.to} | ${toDisplayTime(rideReq.time)}\nReply ${rideReq.id}`);
+            clearSession(userPhoneKey); return;
+        }
         if (ai.role==='chat') {
             let reply = await answerGeneralQuestion(text, user2.location||session2.draft.from||"Juja");
             if (!reply) reply = `${getTimeGreeting()}! I'm Bett — I help students connect with affordable rides. Say: Need a ride from Juja to Thika now, or say Online if you're a driver.`;
