@@ -88,9 +88,8 @@ function parseTimeQuick(input) {
 }
 function isSimpleLocation(txt) {
     const t = txt.toLowerCase().trim();
-    // FIXED: added yes, yeah, yep, etc
-    const block = ['hi','hey','hello','sasa','mambo','niaje','need','ride','offer','driver','car','online','offline','filter','clear','next','now','sai','kesho','today','thanks','asante','ok','okay','yes','yeah','yep','yebo','sawa','poa','asante','cool','thx','thanks','need offer','offer ride','need to offer','i need','available','requests','show','all','see','my','trip','accept','take','end ride'];
-    if (block.some(b => t===b || t.startsWith(b+' '))) return false;
+    const block = ['hi','hey','hello','sasa','mambo','niaje','need','ride','offer','driver','car','online','offline','filter','clear','next','now','sai','kesho','today','thanks','asante','ok','okay','yes','yeah','yep','yebo','sawa','poa','cool','thx','need offer','offer ride','need to offer','i need','available','requests','show','all','see','my','trip','accept','take','end ride','who are you','what are you','help','what can you do','how does it work'];
+    if (block.some(b => t===b || t.startsWith(b+' ') || t.includes(b))) return false;
     if (t.length < 3 || t.length > 25) return false;
     if (/^\d+$/.test(t)) return false;
     if (parseTimeQuick(t)) return false;
@@ -142,9 +141,9 @@ startWhatsApp();
 
 var SYSTEM_PROMPT = `You are Rideschat Kenya. Current: {TODAY_INFO} [{TODAY_DATE}] {GREETING}. Draft: {CONTEXT_DRAFT}
 Classify:
-1. CHITCHAT: Hi,How are you,Weather -> {"role":"chat"}
-2. RIDE: Extract from/to/date/time
-3. COMMAND: TAKE 1,ONLINE,OFFLINE,FILTER Juja,CLEAR FILTERS
+1. CHITCHAT: Hi, Who are you, What can you do, Help, How does it work, Weather -> {"role":"chat"}
+2. RIDE: Extract from/to/date/time - "from Juja to Thika", "Niko Juja nataka kuenda Thika sai" -> {"role":"rider", from, to}
+3. COMMAND: TAKE 1, ONLINE, OFFLINE, FILTER Juja, CLEAR FILTERS -> {"role":"command"}
 Return ONLY JSON:
 {"role":"rider|driver|command|chat","command":"ONLINE|OFFLINE|SHOW_REQUESTS|TAKE|FILTER|CLEAR_FILTERS|NEXT|null","filter":string|null,"takeId":number|null,"from":string|null,"to":string|null,"date":"today|tomorrow|null","time":"HH:MM|now|null","seats":number|null}
 `;
@@ -167,6 +166,42 @@ async function parseWithAI(msg, contextDraft={}) {
             if (data.time) data.time=getRealTime(data.time);
             return data;
         } catch(e) { if (i===models.length-1) throw e; }
+    }
+}
+
+// EXCELLENT general Q&A - answers Who are you, Help, etc.
+async function answerGeneralQuestion(q, loc="Juja") {
+    const lower = q.toLowerCase().trim();
+    if (!lower || lower.length <= 2) return null;
+    if (/^\d+$/.test(lower)) return null;
+    if (['accept'].includes(lower)) return null;
+
+    try {
+        const greeting = getTimeGreeting();
+        let sys = `You are Rideschat Kenya - WhatsApp ride-sharing bot in Kenya.
+
+RULES:
+- You connect RIDERS and DRIVERS.
+- RIDER says: "Need a ride from Juja to Thika now" or just "Juja" then "Thika" then "Now"
+- DRIVER says: "Online" or "Offer ride" to see open rides, then "4" or "TAKE 4" to accept
+- When matched, rider and driver can chat here directly. Say "END RIDE" to close.
+
+Answer briefly 1-3 lines, friendly, no emojis.
+If asked "Who are you?": "I'm Rideschat! I connect riders & drivers in Kenya. Riders say 'Need a ride from X to Y', drivers say 'Online' to see requests."
+If "I need help" / "how does it work": "Easy! RIDER: Say where from & where to. Example: 'From Juja to Thika now'. DRIVER: Say 'Online' to see rides near you, reply with number to TAKE. When matched you can chat here. Say END RIDE when done."
+If greeting: "${greeting}! Karibu Rideschat. Need a ride? Say from where to where. Driver? Say Online."
+Location context: ${loc}
+Current time: ${getNairobiNow().toLocaleTimeString()}`;
+
+        const res = await axios.post("https://api.groq.com/openai/v1/chat/completions", {
+            model: "openai/gpt-oss-20b",
+            messages: [{role:"system",content:sys},{role:"user",content:q}],
+            temperature:0.6,
+            max_tokens: 180
+        }, { headers:{ "Authorization":`Bearer ${process.env.GROQ_API_KEY}` } });
+        return res.data.choices[0].message.content.trim();
+    } catch(e) {
+        return `${getTimeGreeting()}! I'm Rideschat - I connect riders & drivers in Kenya. Need a ride? Say: Need a ride from Juja to Thika now. Are you a driver? Say: Online`;
     }
 }
 
@@ -217,26 +252,26 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             return;
         }
 
-        // 2. IGNORE short acks that are not in chat
+        // 2. Ignore emojis only if NOT in active chat
         if (!activeChats[userPhoneKey]) {
-            if (lowerText.includes('👍') || lowerText.includes('❤️') || lowerText.includes('😍')) return;
-            if (['okay','ok','cool','thx','thanks','asante','yes','yeah'].includes(lowerText) && lowerText.length < 6) return;
+            if (lowerText.includes('👍') || lowerText.includes('❤️') || lowerText.includes('😍')) {
+                if (lowerText.length < 5) return;
+            }
         }
 
-        // 3. NEW SESSION commands - kill old chat
+        // 3. NEW SESSION - kill old chat
         const isNewStart = lowerText==='offline' || lowerText.startsWith('offline') || lowerText==='online' || lowerText.startsWith('online') || lowerText==='need a ride' || lowerText==='need ride' || lowerText.startsWith('need a ride') || lowerText.startsWith('filter ') || lowerText.includes('clear filter');
         if (isNewStart) {
             killChatFor(userPhoneKey);
             if (lowerText.includes('need a ride') || lowerText==='need ride') clearSession(userPhoneKey);
         }
 
-        // 4. FIXED: IF IN ACTIVE CHAT, FORWARD FIRST - BEFORE LOCATION CHECK
-        // This fixes your screenshot: Yes -> Sent to rider, not "Okay from Yes where to?"
+        // 4. IF IN ACTIVE CHAT -> FORWARD FIRST (fixes Yes bug)
         if (activeChats[userPhoneKey]) {
             if (await checkAndForwardChat(phoneJid, text, realPhone)) return;
         }
 
-        // 5. LOCATION - only for users NOT in active chat
+        // 5. LOCATION - only if NOT in chat
         if (isSimpleLocation(text)) {
             var user = await User.getOrCreate(userPhoneKey);
             var session = getSession(userPhoneKey);
@@ -331,8 +366,11 @@ async function handleRideLogic(phoneJid, text, realPhone) {
         }
 
         var ai = await parseWithAI(text, session2.draft);
+        // FIXED: Now answers general questions perfectly
         if (ai.role==='chat') {
-            await sendGupshupMessage(phoneJid, `${getTimeGreeting()}! Where are you riding from today?`);
+            let reply = await answerGeneralQuestion(text, user2.location||session2.draft.from||"Juja");
+            if (!reply) reply = `${getTimeGreeting()}! I'm Rideschat — I connect riders & drivers. Say: Need a ride from Juja to Thika now, or say Online if you're a driver.`;
+            await sendGupshupMessage(phoneJid, reply);
             return;
         }
         if (ai.role==='command') {
