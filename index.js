@@ -56,34 +56,42 @@ function getTimeGreeting(timezone) {
 }
 function getCountdownText(rideTimeStr, rideDateStr, timezone) {
     const now = getUserNow(timezone);
-    const targetDate = rideDateStr? new Date(rideDateStr) : new Date(now);
-    if (rideTimeStr && rideTimeStr!== 'now' && rideTimeStr!== 'Flexible') {
-        const parts = rideTimeStr.split(':');
-        const h = parseInt(parts[0], 10);
-        const m = parseInt(parts[1] || '0', 10);
-        if (!isNaN(h)) targetDate.setHours(h, m || 0, 0, 0);
+    if (!rideTimeStr || rideTimeStr === 'now' || rideTimeStr === 'Flexible') return 'NOW';
+    const parts = String(rideTimeStr).split(':');
+    let h = parseInt(parts[0], 10);
+    let m = parseInt(parts[1] || '0', 10);
+    if (isNaN(h)) return 'NOW';
+    let target = new Date(now);
+    if (rideDateStr && /^\d{4}-\d{2}-\d{2}$/.test(rideDateStr)) {
+        let [yy, mm, dd] = rideDateStr.split('-').map(Number);
+        target.setFullYear(yy, mm - 1, dd);
     }
-    const diffMs = targetDate.getTime() - now.getTime();
+    target.setHours(h, m || 0, 0, 0);
+    const diffMs = target.getTime() - now.getTime();
     const diffMins = Math.round(diffMs / (1000 * 60));
-    if (diffMins <= 0 && diffMins > -15) return 'NOW';
-    if (diffMins <= -15) return 'OVERDUE';
-    if (diffMins < 60) return 'in ' + diffMins + 'm';
+    if (diffMins <= 0 && diffMins > -30) return 'NOW';
+    if (diffMins <= -30) return 'OVERDUE';
+    if (diffMins < 60) return `in ${diffMins}m`;
     const diffHours = Math.floor(diffMins / 60);
     const remMins = diffMins % 60;
-    return 'in ' + diffHours + 'h' + remMins + 'm';
+    return `in ${diffHours}h${remMins>0? remMins+'m':''}`;
 }
 function sortAndTagRides(rides, timezone) {
     const now = getUserNow(timezone);
     return rides.map(ride => {
-        let departureDate = ride.date? new Date(ride.date) : new Date(now);
+        let target = new Date(now);
+        if (ride.date && /^\d{4}-\d{2}-\d{2}$/.test(ride.date)) {
+            let [yy, mm, dd] = ride.date.split('-').map(Number);
+            target.setFullYear(yy, mm - 1, dd);
+        }
         if (ride.time && ride.time!== 'now' && ride.time!== 'Flexible') {
             const parts = String(ride.time).split(':');
             const h = parseInt(parts[0], 10);
             const m = parseInt(parts[1] || '0', 10);
-            if (!isNaN(h)) departureDate.setHours(h, m || 0, 0, 0);
+            if (!isNaN(h)) target.setHours(h, m || 0, 0, 0);
         }
-        const diffMins = Math.round((departureDate.getTime() - now.getTime()) / (1000 * 60));
-        const isUrgent = diffMins >= -10 && diffMins <= 30;
+        const diffMins = Math.round((target.getTime() - now.getTime()) / (1000 * 60));
+        const isUrgent = diffMins >= -30 && diffMins <= 60;
         return {...ride, diffMins, isUrgent, countdownStr: getCountdownText(ride.time, ride.date, timezone) };
     }).sort((a, b) => {
         if (a.isUrgent &&!b.isUrgent) return -1;
@@ -150,12 +158,19 @@ function getRealDate(aiDate, timezone) {
     return now.toISOString().split('T')[0];
 }
 function getRealTime(aiTime, timezone) {
+    if (!aiTime) return null;
     const now = getUserNow(timezone);
-    const hh = String(now.getHours()).padStart(2,'0');
-    const mm = String(now.getMinutes()).padStart(2,'0');
-    if (!aiTime) return hh + ':' + mm;
     let l = aiTime.toString().toLowerCase().trim();
-    if (['now','asap'].includes(l)) return hh + ':' + mm;
+    const wordMap = { one:'1', two:'2', three:'3', four:'4', five:'5', six:'6', seven:'7', eight:'8', nine:'9', ten:'10', eleven:'11', twelve:'12' };
+    for (let w in wordMap) { l = l.replace(new RegExp(`\\b${w}\\b`, 'g'), wordMap[w]); }
+    if (['now','asap','flexible','just now','immediately','now now'].includes(l)) {
+        const hh = String(now.getHours()).padStart(2,'0');
+        const mm = String(now.getMinutes()).padStart(2,'0');
+        return `${hh}:${mm}`;
+    }
+    if (l.includes('morning')) return '09:00';
+    if (l.includes('afternoon')) return '14:00';
+    if (l.includes('evening') || l.includes('tonight')) return '19:00';
     let m = l.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/);
     if (m) {
         let h = parseInt(m[1], 10);
@@ -163,9 +178,11 @@ function getRealTime(aiTime, timezone) {
         let ap = m[3];
         if (ap==='pm' && h<12) h += 12;
         if (ap==='am' && h===12) h = 0;
-        return String(h).padStart(2,'0') + ':' + String(min).padStart(2,'0');
+        if (h>=0 && h<=23 && min>=0 && min<60) {
+            return `${String(h).padStart(2,'0')}:${String(min).padStart(2,'0')}`;
+        }
     }
-    return hh + ':' + mm;
+    return null;
 }
 function toDisplayTime(t) {
     if (!t || t === 'Flexible') return 'now';
@@ -320,11 +337,15 @@ Current Context:
 - Local Time: {TODAY_INFO} [{TODAY_DATE}]
 - Active Draft Session: {CONTEXT_DRAFT}
 CLASSIFICATION RULES:
-1. "rider": User NEEDS/WANTS a ride (e.g., "Need a ride", "taking a cab", "need ride ASAP", "from A to B").
+1. "rider": User NEEDS/WANTS a ride (e.g., "Need a ride", "taking a cab", "need ride ASAP", "from A to B", "from X to Y at 9pm").
    - Map isolated place names or times to missing "from", "to", or "time" fields in active drafts.
 2. "driver": User OWNS/OFFERS a ride or vehicle (e.g., "giving ride now", "driving to X", "offering seats", "I want to offer ride").
 3. "command": Action flags like ONLINE, OFFLINE, SHOW_REQUESTS, CLEAR_FILTERS, NEXT, TAKE [ID], FILTER [Location], END_RIDE.
 4. "chat": Greetings or general queries when NOT filling a ride draft.
+TIME RULES:
+- Understand: "9 AM", "9am", "nine pm", "nine in the morning", "9 in the evening", "tonight", "this morning", "now"
+- Normalize: "nine pm" => "21:00", "nine am" => "09:00", "9 in the evening" => "21:00", "tonight" => "19:00", "now" => "now"
+- If user says "from A to B at nine pm", extract from=A, to=B, time=21:00
 Return ONLY JSON:
 {
   "role": "rider" | "driver" | "command" | "chat",
@@ -350,8 +371,8 @@ async function parseWithAI(msg, region, contextDraft) {
                 { headers: { "Authorization": "Bearer " + apiKey } }
             );
             var data = JSON.parse(res.data.choices[0].message.content.trim());
-            if (data.date) data.date = getRealDate(data.date, region.timezone);
-            if (data.time) data.time = getRealTime(data.time, region.timezone);
+            if (data.date) { data.date = getRealDate(data.date, region.timezone); } else { data.date = null; }
+            if (data.time) { data.time = getRealTime(data.time, region.timezone); } else { data.time = null; }
             return data;
         } catch (e) {
             if (i === models.length - 1) return { role: "chat" };
@@ -359,7 +380,6 @@ async function parseWithAI(msg, region, contextDraft) {
     }
 }
 
-// FIXED MAIN LOGIC - NO MORE Juja->Juja
 async function handleRideLogic(phoneJid, text, realPhone) {
     try {
         const lowerText = text.toLowerCase().trim();
@@ -433,11 +453,9 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             let draft = currentSess.draft || {};
             let from = ai.from || draft.from || null;
             let to = ai.to || draft.to || null;
-
             if (!from && rawText.length >= 3 && rawText.length <= 30) {
                 if (!['online','offline','clear','next','hi','hey','hello','ok','now'].includes(lowerText)) from = rawText;
             }
-
             if (!from) {
                 currentSess.draft = { role: 'driver' };
                 await sendGupshupMessage(phoneJid, 'Where are you driving from? Example: ' + region.examplePlaces);
@@ -445,7 +463,6 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             }
             currentSess.draft.from = from;
             if (from &&!to) {
-                // If user sent same city again, don't accept as to
                 if (draft.from && rawText.toLowerCase() === draft.from.toLowerCase() &&!ai.to) {
                     await sendGupshupMessage(phoneJid, 'You are already at ' + from + '. Where to? Example: ' + region.exampleDest);
                     return;
@@ -484,13 +501,14 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             let from = ai.from || draft.from || null;
             let to = ai.to || draft.to || null;
             let time = ai.time || draft.time || null;
-            let date = ai.date || draft.date || getRealDate('today', region.timezone);
+            let date = ai.date || draft.date || null;
 
-            // STEP 1: FROM
             if (!from) {
                 if (rawText.length >= 3 && rawText.length <= 30) {
                     if (!['need a ride','want ride','need ride','i need','online','offline','clear','next','hi','hey','hello','thanks','now','asap'].includes(lowerText)) {
-                        from = rawText;
+                        if (!getRealTime(rawText, region.timezone)) {
+                            from = rawText;
+                        }
                     }
                 }
                 if (!from) {
@@ -499,15 +517,17 @@ async function handleRideLogic(phoneJid, text, realPhone) {
                     return;
                 }
                 currentSess.draft = { role: 'rider', from: from };
-                await sendGupshupMessage(phoneJid, 'Got it, from ' + from + ' -- where to? Example: ' + region.exampleDest);
-                return;
+                // If AI also gave to and time in same message, continue, else ask to
+                if (!to) {
+                    await sendGupshupMessage(phoneJid, 'Got it, from ' + from + ' -- where to? Example: ' + region.exampleDest);
+                    return;
+                }
             }
 
-            // STEP 2: TO - must be different from FROM
             if (!to) {
                 if (rawText.length >= 3 && rawText.length <= 30) {
                     if (rawText.toLowerCase()!== from.toLowerCase()) {
-                        if (!['now','asap','flexible','today','tomorrow','morning','afternoon','evening','tonight','9 am','9am'].includes(lowerText)) {
+                        if (!getRealTime(rawText, region.timezone)) {
                             to = rawText;
                         }
                     } else {
@@ -519,37 +539,35 @@ async function handleRideLogic(phoneJid, text, realPhone) {
                     await sendGupshupMessage(phoneJid, 'Got it, from ' + from + ' -- where to? Example: ' + region.exampleDest);
                     return;
                 }
-                // Final check: block same city
                 if (from.toLowerCase() === to.toLowerCase()) {
                     await sendGupshupMessage(phoneJid, 'From and to can\'t be same (' + from + '). Where to? Example: ' + region.exampleDest);
                     return;
                 }
                 currentSess.draft = { role: 'rider', from: from, to: to, date: date };
-                await sendGupshupMessage(phoneJid, 'Got it, ' + from + ' -> ' + to + '. What time? Reply Now or 9 AM');
-                return;
-            }
-
-            // STEP 3: TIME - handle Now correctly
-            if (!time) {
-                if (['now','asap','flexible'].includes(lowerText) || lowerText.match(/\d{1,2}(:\d{2})?\s*(am|pm)?/)) {
-                    time = getRealTime(rawText, region.timezone);
-                } else {
-                    time = getRealTime(rawText, region.timezone);
-                    // If still not time, ask again
-                    if (ai.role!== 'rider' &&!lowerText.match(/now|asap|\d/)) {
-                        await sendGupshupMessage(phoneJid, 'What time? Reply Now or 9 AM for ' + from + ' -> ' + to);
-                        return;
-                    }
+                if (!time) {
+                    await sendGupshupMessage(phoneJid, 'Got it, ' + from + ' -> ' + to + '. What time?');
+                    return;
                 }
             }
 
-            // Prevent same from/to at creation
             if (from.toLowerCase() === to.toLowerCase()) {
                 await sendGupshupMessage(phoneJid, 'From and to can\'t be same (' + from + '). Where to?');
                 currentSess.draft.to = null;
                 return;
             }
 
+            if (!time) {
+                let parsed = getRealTime(rawText, region.timezone);
+                if (parsed) {
+                    time = parsed;
+                } else {
+                    currentSess.draft = { role: 'rider', from: from, to: to, date: date };
+                    await sendGupshupMessage(phoneJid, 'What time?');
+                    return;
+                }
+            }
+
+            if (!date) date = getRealDate('today', region.timezone);
             let rideReq = await RideRequest.createCustom(userPhoneKey, { from, to, time, date });
             let dispDate = toDisplayDate(date, region.timezone);
             await sendGupshupMessage(phoneJid, 'RIDE ' + rideReq.id + ' CREATED\n' + rideReq.from + ' -> ' + rideReq.to + ' ' + toDisplayTime(rideReq.time) + ' ' + dispDate + '\nAlerting drivers...');
