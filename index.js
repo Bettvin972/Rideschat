@@ -198,10 +198,10 @@ async function parseWithAI(msg, contextDraft = {}) {
     var apiKey = process.env.GROQ_API_KEY;
     if (!apiKey) throw new Error("GROQ_API_KEY missing in .env");
 
-    // Correct Groq API model strings using underscores
+    // Corrected Groq model strings with hyphens and dots
     var models = [
-        "llama_3_3_70b_versatile",
-        "llama_3_1_8b_instant",
+        "llama-3.3-70b-versatile",
+        "llama-3.1-8b-instant",
         "openai/gpt-oss-120b"
     ];
 
