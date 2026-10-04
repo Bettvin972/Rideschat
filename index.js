@@ -59,6 +59,9 @@ function getRealDate(aiDate) {
     const s = aiDate.toString().toLowerCase().trim();
     if (s.includes('day after tomorrow')) { let t = new Date(now); t.setDate(now.getDate()+2); return t.toISOString().split('T')[0]; }
     if (s.includes('tomorrow')) { let t = new Date(now); t.setDate(now.getDate()+1); return t.toISOString().split('T')[0]; }
+    if (s.includes('next week')) {
+        let t = new Date(now); t.setDate(now.getDate()+7); return t.toISOString().split('T')[0];
+    }
     if (s.includes('today') || s.includes('now') || s.includes('asap') || s==='null') return now.toISOString().split('T')[0];
     const weekdays = ['monday','tuesday','wednesday','thursday','friday','saturday','sunday'];
     for (let d of weekdays) {
@@ -76,6 +79,7 @@ function getRealDate(aiDate) {
         }
     }
     if (s.match(/^\d{4}-\d{2}-\d{2}$/)) return s;
+    if (s.length > 25) return getNairobiNow().toISOString().split('T')[0];
     return s;
 }
 function getRealTime(aiTime) {
@@ -97,6 +101,11 @@ function toDisplayTime(t) {
     return `${hh}:${String(m||0).padStart(2,'0')} ${ap}`;
 }
 function toDisplayDate(d) {
+    if (!d) return '';
+    const ld = d.toLowerCase();
+    if (ld.includes('next week')) return 'Next week';
+    if (ld.includes('invalid')) return 'Next week';
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return d;
     const now = getNairobiNow();
     const today = now.toISOString().split('T')[0];
     let tom = new Date(now); tom.setDate(now.getDate()+1);
@@ -104,6 +113,7 @@ function toDisplayDate(d) {
     if (d === today) return 'Today';
     if (d === tomorrow) return 'Tomorrow';
     let date = new Date(d);
+    if (isNaN(date.getTime())) return d;
     return date.toLocaleDateString('en-US',{weekday:'long'}) + ' ' + d;
 }
 function getDirectChatLink(jid) {
@@ -132,24 +142,25 @@ function parseRating(txt) {
         const count = (t.match(/⭐/g) || []).length;
         if (count>=1 && count<=5) return count;
     }
-    let m = t.match(/([1-5])\s*(star|stars)?/);
-    if (m) return parseInt(m[1]);
     if (/^[1-5]$/.test(t)) return parseInt(t);
+    let m = t.match(/\b([1-5])\b/);
+    if (m) return parseInt(m[1]);
     return null;
 }
 async function addRatingToUser(phone, newRating) {
     try {
         let u = await User.getOrCreate(phone);
-        if (u.ratingCount!== undefined) {
-            let total = (u.rating || 5) * (u.ratingCount || 0) + newRating;
-            u.ratingCount = (u.ratingCount || 0) + 1;
-            u.rating = total / u.ratingCount;
-        } else {
-            u.rating = u.rating? (u.rating*0.8 + newRating*0.2) : newRating;
-        }
+        if (u.rating === null || u.rating === undefined) u.rating = 5;
+        if (u.ratingCount === null || u.ratingCount === undefined) u.ratingCount = 0;
+        let total = u.rating * u.ratingCount + newRating;
+        u.ratingCount += 1;
+        u.rating = total / u.ratingCount;
         await u.save();
         return u.rating;
-    } catch(e){ console.error(e); }
+    } catch(e){
+        console.error("Rating save error:", e.message);
+        return 5;
+    }
 }
 function isSimpleLocation(txt) {
     const t = txt.toLowerCase().trim();
@@ -293,30 +304,39 @@ async function handleRideLogic(phoneJid, text, realPhone) {
     try {
         const lowerText = text.toLowerCase().trim();
         if (lowerText.length < 2) return;
-        const greetings = ['hi','hey','hello','niaje','mambo','yo','hii','heyy','hi there','hey there','hello there'];
-        if (greetings.includes(lowerText)) {
-            await sendGupshupMessage(phoneJid, `${getTimeGreeting()}! I'm Bett - I help students with rides.`);
-            return;
-        }
         const userPhoneKey = realPhone||phoneJid;
+
+        // 1. RATING FIRST
         let ratingSession = getSession(userPhoneKey);
-        if (ratingSession.awaitingRating) {
+        if (ratingSession && ratingSession.awaitingRating) {
             let rate = parseRating(lowerText);
             if (rate) {
                 let other = ratingSession.awaitingRating.other;
                 let rideId = ratingSession.awaitingRating.rideId;
-                await addRatingToUser(other, rate);
+                let newAvg = await addRatingToUser(other, rate);
                 clearSession(userPhoneKey);
-                await sendGupshupMessage(phoneJid, `Thanks! You rated ${rate} ⭐ for trip #${rideId}. Your rating helps others.\nNeed another? Say: Need a ride`);
-                await sendGupshupMessage(other, `You received a ${rate} ⭐ rating for trip #${rideId}! Keep it up!`);
+                await sendGupshupMessage(phoneJid, `✅ Rating saved! You rated ${rate} ⭐ for trip #${rideId}.\nNew rating for other user: ${newAvg.toFixed(1)}⭐\n\nNeed another? Say: Need a ride`);
+                try { await sendGupshupMessage(other, `You received a ${rate} ⭐ rating for trip #${rideId}! Your new average: ${newAvg.toFixed(1)}⭐`); } catch(e){}
                 return;
             } else if (lowerText.includes('skip') || lowerText==='no') {
                 clearSession(userPhoneKey);
                 await sendGupshupMessage(phoneJid, "Skipped rating. Need another? Say: Need a ride");
                 return;
+            } else {
+                await sendGupshupMessage(phoneJid, `Please rate 1-5 stars for trip #${ratingSession.awaitingRating.rideId}. Example: 5 or skip`);
+                return;
             }
         }
-        if (lowerText.includes('end ride') || ['complete','trip done','cancel ride','done','finished'].includes(lowerText)) {
+
+        // 2. HI FIX
+        const greetings = ['hi','hey','hello','niaje','mambo','yo','hii','heyy','hi there','hey there','hello there'];
+        if (greetings.includes(lowerText)) {
+            await sendGupshupMessage(phoneJid, `${getTimeGreeting()}! I'm Bett - I help students with rides.`);
+            return;
+        }
+
+        // 3. END RIDE FIX - catches "end this ride"
+        if (/(end|close|finish|complete).*(ride|trip)/i.test(lowerText) || ['done','finished','complete','trip done','end ride','end trip'].includes(lowerText)) {
             let rideToRate = null;
             try {
                 rideToRate = await RideRequest.findOne({where:{status:'TAKEN', [Op.or]:[{phone:userPhoneKey},{driverPhone:userPhoneKey}]}, order:[['updatedAt','DESC']]});
@@ -341,6 +361,7 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             }
             return;
         }
+
         if (!activeChats[userPhoneKey]) {
             if (lowerText.includes('👍') || lowerText.includes('❤️') || lowerText.includes('😍')) { if (lowerText.length < 5) return; }
         }
@@ -460,7 +481,7 @@ async function handleRideLogic(phoneJid, text, realPhone) {
         if (session2.draft.from && session2.draft.to &&!session2.draft.time) {
             let qt = parseTimeQuick(lowerText);
             let qd = getRealDate(lowerText);
-            if (qt || qd!== getNairobiNow().toISOString().split('T')[0] || lowerText.includes('tomorrow') || ['monday','tuesday','wednesday','thursday','friday','saturday','sunday'].some(d=>lowerText.includes(d))) {
+            if (qt || qd!== getNairobiNow().toISOString().split('T')[0] || lowerText.includes('tomorrow') || ['monday','tuesday','wednesday','thursday','friday','saturday','sunday'].some(d=>lowerText.includes(d)) || lowerText.includes('next week')) {
                 if (qt) session2.draft.time = qt; else session2.draft.time = '09:00';
                 session2.draft.date = qd;
                 let displayDate = toDisplayDate(qd);
