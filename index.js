@@ -18,6 +18,7 @@ let qrLast = null;
 const AUTH_PATH = path.join(__dirname, 'auth_info');
 const userSessions = {};
 const activeChats = {};
+const ratingSessions = {}; // SEPARATE - so clearall doesn't break ratings
 
 function getSession(phone) {
     if (!userSessions[phone]) userSessions[phone] = { draft: {}, lastUpdated: Date.now() };
@@ -103,7 +104,7 @@ function toDisplayDate(d) {
     const ld = d.toLowerCase();
     if (ld.includes('next week')) return 'Next week';
     if (ld.includes('invalid')) return 'Next week';
-    if (ld.includes('who') || ld.includes('what') || ld.includes('where')) return 'Today';
+    if (ld.includes('who') || ld.includes('what') || ld.includes('where') || ld.includes('okay')) return 'Today';
     if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return d;
     const now = getNairobiNow();
     const today = now.toISOString().split('T')[0];
@@ -151,12 +152,41 @@ async function addRatingToUser(phone, newRating) {
         let u = await User.getOrCreate(phone);
         if (u.rating === null || u.rating === undefined) u.rating = 5;
         if (u.ratingCount === null || u.ratingCount === undefined) u.ratingCount = 0;
-        let total = u.rating * u.ratingCount + newRating;
-        u.ratingCount += 1;
-        u.rating = total / u.ratingCount;
-        await u.save();
-        return u.rating;
-    } catch(e){ console.error("Rating save error:", e.message); return 5; }
+        // FIX: if first rating, don't multiply by old 5
+        let total = (u.ratingCount === 0)? newRating : (u.rating * u.ratingCount + newRating);
+        u.ratingCount = (u.ratingCount === 0)? 1 : u.ratingCount + 1;
+        if (u.ratingCount > 1 && total!== newRating) {
+            // already calculated above
+        } else if (u.ratingCount === 1) {
+            // first rating already set
+        }
+        if (u.ratingCount === 1) {
+            u.rating = newRating;
+        } else {
+            // recalc: we already have total from previous
+            let prevTotal = u.rating * (u.ratingCount -1);
+            // Actually simpler: use stored rating
+            // We will recompute correctly
+            let prevCount = u.ratingCount -1;
+            let prevRating = u.rating; // old avg before update - need to save before
+            // To avoid confusion, fetch fresh
+        }
+        // CLEAN RECALC
+        let fresh = await User.getOrCreate(phone);
+        // Use proper formula
+        let countBefore = fresh.ratingCount || 0;
+        let avgBefore = fresh.rating || 5;
+        if (countBefore === 0) {
+            fresh.rating = newRating;
+            fresh.ratingCount = 1;
+        } else {
+            fresh.rating = (avgBefore * countBefore + newRating) / (countBefore + 1);
+            fresh.ratingCount = countBefore + 1;
+        }
+        await fresh.save();
+        console.log(`RATING SAVED: ${phone} rated ${newRating}, new avg ${fresh.rating.toFixed(1)} count ${fresh.ratingCount}`);
+        return fresh.rating;
+    } catch(e){ console.error("Rating save error:", e.stack); return 5; }
 }
 function isSimpleLocation(txt) {
     const t = txt.toLowerCase().trim();
@@ -188,7 +218,7 @@ function isPollutedRide(r) {
     let f = (r.from||'').toLowerCase();
     let t = (r.to||'').toLowerCase();
     let d = (r.date||'').toLowerCase();
-    let bad = ['where','who','what','when','why','how','president','amazon','founder','kenya is','usa is','okay','where is','is kenya','is the','filter','yooh','end','next','available','is kenya','yooh'];
+    let bad = ['where','who','what','when','why','how','president','amazon','founder','kenya is','usa is','okay','where is','is kenya','is the','filter','yooh','end','next','available','is kenya','yooh','who'];
     if (bad.some(b => f.includes(b) || t.includes(b) || d.includes(b))) return true;
     if (f.length<2 || t.length<2 || f.length>20 || t.length>20) return true;
     return false;
@@ -291,7 +321,6 @@ async function sendGupshupMessage(toJid, txt) {
     if (!toJid||!sock) return;
     try { let jid = toJid.includes('@')?toJid:toJid.replace('+','').trim()+'@s.whatsapp.net'; await sock.sendMessage(jid,{text:txt}); } catch(e){console.error(e.message);}
 }
-// CLEAN: 10. Kenol→Meri 9AM Next 5.0⭐ - NO HASH, RATING KEPT
 async function sendRidesList(toJid, rides, title="RIDES:", page=0) {
     if (!rides || rides.length===0) {
         await sendGupshupMessage(toJid, `${title}\nNo rides now. Try FILTER Juja or CLEAR`);
@@ -311,9 +340,7 @@ async function sendRidesList(toJid, rides, title="RIDES:", page=0) {
         await sendGupshupMessage(toJid, `End of list. Type NEXT to start over`);
         return;
     }
-
     let header = `*${title.toUpperCase()} (${rides.length}) P${page+1}/${totalPages}*\n`;
-
     let lines = [];
     for (let r of chunk) {
         let from = (r.from||'Juja').split(',')[0].split(' ')[0].substring(0,12).replace(/[^a-zA-Z]/g,'');
@@ -326,19 +353,17 @@ async function sendRidesList(toJid, rides, title="RIDES:", page=0) {
         if (date.toLowerCase().includes('who') || date.toLowerCase().includes('where') || date.length>15) date = 'Today';
         if (date.includes(' ')) date = date.split(' ')[0];
         let rate = '5.0';
-        try { let u = await User.getOrCreate(r.phone); rate = (u.rating||5).toFixed(1); } catch(e){}
-        lines.push(`${r.id}. ${from}→${to} ${time} ${date} ${rate}⭐`);
+        let cnt = 0;
+        try { let u = await User.getOrCreate(r.phone); rate = (u.rating||5).toFixed(1); cnt = u.ratingCount||0; } catch(e){}
+        lines.push(`${r.id}. ${from}→${to} ${time} ${date} ${rate}⭐(${cnt})`);
     }
-
     let footer = `\nReply ID e.g. ${chunk[0].id}\n`;
     if (totalPages > 1 && page < totalPages-1) footer += `NEXT for more | FILTER city`;
     else footer += `FILTER city | CLEAR`;
-
     let sess = getSession(toJid);
     sess.ridesList = rides;
     sess.ridesPage = page;
     sess.lastTitle = title;
-
     await sendGupshupMessage(toJid, header + lines.join('\n') + footer);
 }
 async function checkAndForwardChat(phoneJid, text, realPhone) {
@@ -362,23 +387,27 @@ async function handleRideLogic(phoneJid, text, realPhone) {
         if (lowerText.length < 2) return;
         const userPhoneKey = realPhone||phoneJid;
 
-        let ratingSession = getSession(userPhoneKey);
-        if (ratingSession && ratingSession.awaitingRating) {
+        // RATING CHECK FIRST - USE SEPARATE MAP
+        if (ratingSessions[userPhoneKey]) {
             let rate = parseRating(lowerText);
+            console.log(`RATING ATTEMPT ${userPhoneKey}: ${lowerText} -> ${rate}, session:`, ratingSessions[userPhoneKey]);
             if (rate) {
-                let other = ratingSession.awaitingRating.other;
-                let rideId = ratingSession.awaitingRating.rideId;
+                let other = ratingSessions[userPhoneKey].other;
+                let rideId = ratingSessions[userPhoneKey].rideId;
                 let newAvg = await addRatingToUser(other, rate);
-                clearSession(userPhoneKey);
+                delete ratingSessions[userPhoneKey];
                 await sendGupshupMessage(phoneJid, `✅ Rating saved! You rated ${rate}⭐ for trip ${rideId}. New avg for them: ${newAvg.toFixed(1)}⭐\n\nNeed another? Say: Need a ride`);
-                try { await sendGupshupMessage(other, `You received ${rate}⭐ for trip ${rideId}! New avg: ${newAvg.toFixed(1)}⭐`); } catch(e){}
+                try {
+                    let otherUser = await User.getOrCreate(other);
+                    await sendGupshupMessage(other, `You received ${rate}⭐ for trip ${rideId}! Your new avg: ${otherUser.rating.toFixed(1)}⭐(${otherUser.ratingCount||0})`);
+                } catch(e){}
                 return;
             } else if (lowerText.includes('skip') || lowerText==='no') {
-                clearSession(userPhoneKey);
+                delete ratingSessions[userPhoneKey];
                 await sendGupshupMessage(phoneJid, "Skipped rating. Need another? Say: Need a ride");
                 return;
             } else {
-                await sendGupshupMessage(phoneJid, `Please rate 1-5 stars for trip ${ratingSession.awaitingRating.rideId}. Example: 5 or skip`);
+                await sendGupshupMessage(phoneJid, `Please rate 1-5 stars for trip ${ratingSessions[userPhoneKey].rideId}. Example: 5 or type skip`);
                 return;
             }
         }
@@ -403,22 +432,24 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             }
         }
 
-        if (/(end|close|finish|complete).*(ride|trip)/i.test(lowerText) || ['done','finished','complete','trip done','end ride','end trip'].includes(lowerText)) {
+        if (/(end|close|finish|complete).*(ride|trip)/i.test(lowerText) || ['done','finished','complete','trip done','end ride','end trip'].includes(lowerText) || lowerText==='complete ride' || lowerText==='complete this ride') {
             let rideToRate = null;
             try {
                 rideToRate = await RideRequest.findOne({where:{status:'TAKEN', [Op.or]:[{phone:userPhoneKey},{driverPhone:userPhoneKey}]}, order:[['updatedAt','DESC']]});
                 if(rideToRate){ rideToRate.status='COMPLETED'; await rideToRate.save(); }
-            } catch(e){}
+            } catch(e){ console.error(e); }
             let otherPhone = null;
             if (activeChats[userPhoneKey]) otherPhone = activeChats[userPhoneKey].with;
             else if (rideToRate) { otherPhone = rideToRate.phone === userPhoneKey? rideToRate.driverPhone : rideToRate.phone; }
+
+            console.log(`END RIDE ${userPhoneKey} ride ${rideToRate?.id} other ${otherPhone}`);
+
             killChatFor(userPhoneKey);
             clearSession(userPhoneKey);
+
             if (rideToRate && otherPhone) {
-                let sessionRater = getSession(userPhoneKey);
-                sessionRater.awaitingRating = { rideId: rideToRate.id, other: otherPhone };
-                let sessionOther = getSession(otherPhone);
-                sessionOther.awaitingRating = { rideId: rideToRate.id, other: userPhoneKey };
+                ratingSessions[userPhoneKey] = { rideId: rideToRate.id, other: otherPhone };
+                ratingSessions[otherPhone] = { rideId: rideToRate.id, other: userPhoneKey };
                 await sendGupshupMessage(phoneJid, `Trip ${rideToRate.id} ended. Thanks for riding with Bett!\n\nPlease rate: Reply 1-5 stars (5 = Excellent)\nExample: 5`);
                 await sendGupshupMessage(otherPhone, `Trip ${rideToRate.id} ended. Thanks for riding with Bett!\n\nPlease rate: Reply 1-5 stars (5 = Excellent)\nExample: 5`);
             } else {
@@ -443,7 +474,7 @@ async function handleRideLogic(phoneJid, text, realPhone) {
                 return f.includes(filterLower) || t.includes(filterLower);
             });
             let ridesToShow = filtered.length>0? filtered : allRides;
-            await sendGupshupMessage(phoneJid, `Filter: ${filterLoc} | ${ridesToShow.length} rides | Your rating: ${(u.rating||5).toFixed(1)}⭐`);
+            await sendGupshupMessage(phoneJid, `Filter: ${filterLoc} | ${ridesToShow.length} rides | Your rating: ${(u.rating||5).toFixed(1)}⭐(${u.ratingCount||0})`);
             await sendRidesList(phoneJid, ridesToShow, `${ridesToShow.length} RIDES FOR ${filterLoc.toUpperCase()}:`, 0);
             return;
         }
@@ -478,7 +509,7 @@ async function handleRideLogic(phoneJid, text, realPhone) {
                 return rf.includes(df) || rt.includes(dt) || rf.includes(dt) || rt.includes(df) || df.includes(rf) || dt.includes(rt);
             });
             let ridesToShow = matched.length>0? matched : allRides;
-            await sendGupshupMessage(phoneJid, `ONLINE AS DRIVER: ${route.from}→${route.to} | Your rating: ${(u.rating||5).toFixed(1)}⭐ | ${ridesToShow.length} matching`);
+            await sendGupshupMessage(phoneJid, `ONLINE AS DRIVER: ${route.from}→${route.to} | Your rating: ${(u.rating||5).toFixed(1)}⭐(${u.ratingCount||0}) | ${ridesToShow.length} matching`);
             await sendRidesList(phoneJid, ridesToShow, `${ridesToShow.length} RIDES MATCHING ${route.from.toUpperCase()}→${route.to.toUpperCase()}:`, 0);
             let s = getSession(userPhoneKey);
             s.driverRoute = route;
@@ -516,7 +547,7 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             return;
         }
         const isNewStart = lowerText==='offline' || lowerText.startsWith('offline') || lowerText==='online' || lowerText.startsWith('online') || lowerText.startsWith('filter ') || lowerText.includes('clear filter');
-        if (isNewStart) { killChatFor(userPhoneKey); clearSession(userPhoneKey); }
+        if (isNewStart) { killChatFor(userPhoneKey); clearSession(userPhoneKey); delete ratingSessions[userPhoneKey]; }
         if (activeChats[userPhoneKey]) { if (await checkAndForwardChat(phoneJid, text, realPhone)) return; }
         if (isSimpleLocation(text)) {
             var user = await User.getOrCreate(userPhoneKey);
@@ -543,8 +574,8 @@ async function handleRideLogic(phoneJid, text, realPhone) {
                 activeChats[userPhoneKey]={with:ride.phone, rideId:ride.id};
                 let rider = await User.getOrCreate(ride.phone);
                 let driver = await User.getOrCreate(userPhoneKey);
-                await sendGupshupMessage(phoneJid, `MATCHED ${ride.id} ${ride.from} -> ${ride.to} ${toDisplayTime(ride.time)}\nRider: ${getDirectChatLink(ride.phone)} | ${ (rider.rating||5).toFixed(1)}⭐ (${rider.ratingCount||0})\nYour rating: ${(driver.rating||5).toFixed(1)}⭐\nEND RIDE when done`);
-                await sendGupshupMessage(ride.phone, `DRIVER FOUND ${ride.id} ${ride.from} -> ${ride.to}\nDriver: ${getDirectChatLink(userPhoneKey)} | ${(driver.rating||5).toFixed(1)}⭐\nYour rating: ${(rider.rating||5).toFixed(1)}⭐`);
+                await sendGupshupMessage(phoneJid, `MATCHED ${ride.id} ${ride.from} -> ${ride.to} ${toDisplayTime(ride.time)}\nRider: ${getDirectChatLink(ride.phone)} | ${ (rider.rating||5).toFixed(1)}⭐(${rider.ratingCount||0})\nYour rating: ${(driver.rating||5).toFixed(1)}⭐(${driver.ratingCount||0})\nEND RIDE when done`);
+                await sendGupshupMessage(ride.phone, `DRIVER FOUND ${ride.id} ${ride.from} -> ${ride.to}\nDriver: ${getDirectChatLink(userPhoneKey)} | ${(driver.rating||5).toFixed(1)}⭐(${driver.ratingCount||0})\nYour rating: ${(rider.rating||5).toFixed(1)}⭐(${rider.ratingCount||0})`);
                 return;
             } else { await sendGupshupMessage(phoneJid, `Ride ${rideId} already taken`); return; }
         }
@@ -552,7 +583,7 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             let u = await User.getOrCreate(userPhoneKey);
             await u.setOnline("Juja",2);
             let nearby = await RideRequest.getNearby(u.location);
-            await sendGupshupMessage(phoneJid, `ONLINE: ${u.location} | ${(u.rating||5).toFixed(1)}⭐\nTip: Say "I want to offer ride from Juja to Thika" to set route`);
+            await sendGupshupMessage(phoneJid, `ONLINE: ${u.location} | ${(u.rating||5).toFixed(1)}⭐(${u.ratingCount||0})\nTip: Say "I want to offer ride from Juja to Thika" to set route`);
             await sendRidesList(phoneJid, nearby, `${nearby.length} RIDES NEAR ${u.location.toUpperCase()}:`);
             return;
         }
@@ -580,8 +611,8 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             activeChats[userPhoneKey]={with:ride.phone, rideId:ride.id};
             let rider2 = await User.getOrCreate(ride.phone);
             let driver2 = await User.getOrCreate(userPhoneKey);
-            await sendGupshupMessage(phoneJid, `MATCHED ${ride.id} ${ride.from} -> ${ride.to} ${toDisplayTime(ride.time)} | ${(rider2.rating||5).toFixed(1)}⭐`);
-            await sendGupshupMessage(ride.phone, `DRIVER FOUND ${ride.id} ${ride.from} -> ${ride.to} | ${(driver2.rating||5).toFixed(1)}⭐`);
+            await sendGupshupMessage(phoneJid, `MATCHED ${ride.id} ${ride.from} -> ${ride.to} ${toDisplayTime(ride.time)} | ${(rider2.rating||5).toFixed(1)}⭐(${rider2.ratingCount||0})`);
+            await sendGupshupMessage(ride.phone, `DRIVER FOUND ${ride.id} ${ride.from} -> ${ride.to} | ${(driver2.rating||5).toFixed(1)}⭐(${driver2.ratingCount||0})`);
             return;
         }
         var user2 = await User.getOrCreate(userPhoneKey);
@@ -647,7 +678,7 @@ async function handleRideLogic(phoneJid, text, realPhone) {
                 return rf.includes(df) || rt.includes(dt) || df.includes(rf) || dt.includes(rt);
             });
             let ridesToShow = matched.length>0? matched : allRides;
-            await sendGupshupMessage(phoneJid, `ONLINE AS DRIVER: ${ai.from}→${ai.to} | Your rating: ${(u.rating||5).toFixed(1)}⭐ | ${ridesToShow.length} matching`);
+            await sendGupshupMessage(phoneJid, `ONLINE AS DRIVER: ${ai.from}→${ai.to} | Your rating: ${(u.rating||5).toFixed(1)}⭐(${u.ratingCount||0}) | ${ridesToShow.length} matching`);
             await sendRidesList(phoneJid, ridesToShow, `${ridesToShow.length} RIDES MATCHING ${ai.from.toUpperCase()}→${ai.to.toUpperCase()}:`, 0);
             return;
         }
@@ -661,10 +692,10 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             if (ai.command==='ONLINE') {
                 await user2.setOnline(ai.from||session2.draft.from||"Juja",2);
                 var nearby = await RideRequest.getNearby(user2.location);
-                await sendGupshupMessage(phoneJid, `ONLINE: ${user2.location} | ${(user2.rating||5).toFixed(1)}⭐`);
+                await sendGupshupMessage(phoneJid, `ONLINE: ${user2.location} | ${(user2.rating||5).toFixed(1)}⭐(${user2.ratingCount||0})`);
                 await sendRidesList(phoneJid, nearby, `${nearby.length} RIDES NEAR ${user2.location.toUpperCase()}:`);
             }
-            if (ai.command==='OFFLINE') { await user2.setOffline(); clearSession(userPhoneKey); await sendGupshupMessage(phoneJid, `OFFLINE - ${getTimeGreeting()}!`); }
+            if (ai.command==='OFFLINE') { await user2.setOffline(); clearSession(userPhoneKey); delete ratingSessions[userPhoneKey]; await sendGupshupMessage(phoneJid, `OFFLINE - ${getTimeGreeting()}!`); }
             if (ai.command==='SHOW_REQUESTS') {
                 var nearby2 = await RideRequest.getNearby("Juja");
                 await sendRidesList(phoneJid, nearby2, `${nearby2.length} RIDES IN JUJA:`);
@@ -697,8 +728,13 @@ app.get('/clearall', async (req,res)=>{
     await RideOffer.destroy({ where: {} });
     for (let k in activeChats) delete activeChats[k];
     for (let k in userSessions) delete userSessions[k];
+    for (let k in ratingSessions) delete ratingSessions[k];
     res.send("All rides deleted + memory cleared");
 });
 app.get('/cleardb', async (req,res)=>{ await sequelize.sync({ force: true }); res.send("Full DB wiped"); });
+app.get('/ratings', async (req,res)=>{
+    let users = await User.findAll();
+    res.json(users.map(u=>({phone:u.phone, rating:u.rating, count:u.ratingCount})));
+});
 var PORT = process.env.PORT||10000;
 app.listen(PORT,()=>{ console.log("Bett Running on "+PORT); });
