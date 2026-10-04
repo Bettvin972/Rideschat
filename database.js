@@ -11,7 +11,8 @@ const sequelize = new Sequelize(process.env.DATABASE_URL, {
 
 const User = sequelize.define('User', {
   phone: { type: DataTypes.STRING, primaryKey: true },
-  location: { type: DataTypes.STRING, defaultValue: 'Denton' },
+  location: { type: DataTypes.STRING, defaultValue: 'Juja' },
+  filterFrom: { type: DataTypes.STRING, allowNull: true },
   isOnline: { type: DataTypes.BOOLEAN, defaultValue: false },
   onlineUntil: { type: DataTypes.DATE, allowNull: true },
   rating: { type: DataTypes.FLOAT, defaultValue: 5.0 },
@@ -21,6 +22,7 @@ const User = sequelize.define('User', {
 const RideRequest = sequelize.define('RideRequest', {
   id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
   phone: { type: DataTypes.STRING, allowNull: false },
+  driverPhone: { type: DataTypes.STRING, allowNull: true }, // FIX: Added for chat bridge
   from: { type: DataTypes.STRING },
   to: { type: DataTypes.STRING },
   date: { type: DataTypes.STRING },
@@ -44,10 +46,6 @@ const RideOffer = sequelize.define('RideOffer', {
   rating: { type: DataTypes.FLOAT, defaultValue: 5.0 }
 });
 
-// Don't sync here - we sync in index.js to avoid double sync
-// sequelize.sync({ alter: true })
-
-// Keep original Sequelize create methods
 const originalRideRequestCreate = RideRequest.create.bind(RideRequest);
 const originalRideOfferCreate = RideOffer.create.bind(RideOffer);
 
@@ -75,19 +73,18 @@ User.getOnlineNearby = async (loc) => {
   });
 };
 
-// FIXED: use original create inside
 RideRequest.createRide = async (phone, ai) => {
   return await originalRideRequestCreate({
     phone, from: ai.from, to: ai.to, date: ai.date, time: ai.time,
     seats: ai.seats || 1, bags: ai.bags || 0,
-    girls_only: ai.girls_only || false, pool_allowed: ai.pool_allowed!== false
+    girls_only: ai.girls_only || false, pool_allowed: ai.pool_allowed!== false,
+    status: 'OPEN', driverPhone: null
   });
 };
-
-// FIXED: don't override Sequelize's native create, create a wrapper method
 RideRequest.createCustom = RideRequest.createRide;
 
 RideRequest.getNearby = async (loc) => {
+  // Show OPEN rides
   return await RideRequest.findAll({ where: { status: 'OPEN' }, order: [['createdAt','DESC']], limit: 10 });
 };
 RideRequest.getMatchingRiders = async (offer) => {
@@ -97,6 +94,10 @@ RideRequest.findById = async (id) => {
   return await RideRequest.findByPk(id);
 };
 RideRequest.prototype.updateStatus = async function(s) { this.status = s; await this.save(); };
+RideRequest.clearExpired = async () => {
+  const twoHoursAgo = new Date(Date.now() - 2*60*60*1000);
+  await RideRequest.destroy({ where: { status: 'OPEN', createdAt: { [Op.lt]: twoHoursAgo } } });
+};
 
 RideOffer.createOffer = async (phone, ai) => {
   const user = await User.findByPk(phone);
@@ -106,10 +107,10 @@ RideOffer.createOffer = async (phone, ai) => {
   });
 };
 RideOffer.createCustom = RideOffer.createOffer;
-
 RideOffer.perfectMatch = async (req) => {
   if (!req ||!req.from) return [];
   return await RideOffer.findAll({ where: { from: req.from, to: req.to, date: req.date }, limit: 10 });
 };
+RideOffer.clearExpired = async () => {};
 
-module.exports = { sequelize, User, RideRequest, RideOffer };
+module.exports = { sequelize, User, RideRequest, RideOffer, Op };
