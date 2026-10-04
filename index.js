@@ -4,29 +4,29 @@ const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
 const pino = require('pino');
+const { Op } = require('sequelize');
 const { sequelize, User, RideRequest, RideOffer } = require('./database');
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
 
 const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-
-sequelize.sync({ alter: true }).then(() => { console.log("DB Synced"); }).catch(e => { console.error("DB Sync error:", e.message); });
+sequelize.sync({ alter: true }).then(() => console.log("DB Synced")).catch(e => console.error(e.message));
 
 let sock = null;
 let qrLast = null;
 const AUTH_PATH = path.join(__dirname, 'auth_info');
 
 const userSessions = {};
+const activeChats = {}; // phone -> { with, rideId }
+
 function getSession(phone) {
     if (!userSessions[phone]) userSessions[phone] = { draft: {}, lastUpdated: Date.now() };
     return userSessions[phone];
 }
 function clearSession(phone) { delete userSessions[phone]; }
 
-function getNairobiNow() {
-    return new Date(new Date().toLocaleString('en-US', { timeZone: 'Africa/Nairobi' }));
-}
+function getNairobiNow() { return new Date(new Date().toLocaleString('en-US', { timeZone: 'Africa/Nairobi' })); }
 function getTimeGreeting() {
     const h = getNairobiNow().getHours();
     if (h >= 5 && h < 12) return "Good morning";
@@ -37,38 +37,31 @@ function getTimeGreeting() {
 function getRealDate(aiDate) {
     const now = getNairobiNow();
     if (!aiDate) return now.toISOString().split('T')[0];
-    const str = aiDate.toString().toLowerCase();
-    if (['today','now','null','asap','immediately','leo','sai','sahii','saa hii','now now'].includes(str)) return now.toISOString().split('T')[0];
-    if (['tomorrow','kesho'].includes(str)) { var t = new Date(now); t.setDate(now.getDate()+1); return t.toISOString().split('T')[0]; }
+    const s = aiDate.toString().toLowerCase();
+    if (['today','now','null','asap','leo','sai','sahii'].includes(s)) return now.toISOString().split('T')[0];
+    if (['tomorrow','kesho'].includes(s)) { let t = new Date(now); t.setDate(now.getDate()+1); return t.toISOString().split('T')[0]; }
     return aiDate;
 }
 function getRealTime(aiTime) {
     const now = getNairobiNow();
-    const hhNow = String(now.getHours()).padStart(2,'0');
-    const mmNow = String(now.getMinutes()).padStart(2,'0');
-    if (!aiTime) return `${hhNow}:${mmNow}`;
-    let lower = aiTime.toString().toLowerCase().trim();
-    if (['now','asap','sasa','sai','sahii','saa hii','sasa hivi','now now','right now'].includes(lower)) return `${hhNow}:${mmNow}`;
-    let m = lower.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/);
-    if (m) {
-        let h = parseInt(m[1]); let min = parseInt(m[2]||'0'); let ap = m[3];
-        if (ap==='pm' && h<12) h+=12; if (ap==='am' && h===12) h=0;
-        return `${String(h).padStart(2,'0')}:${String(min).padStart(2,'0')}`;
-    }
-    return `${hhNow}:${mmNow}`;
+    const hh = String(now.getHours()).padStart(2,'0');
+    const mm = String(now.getMinutes()).padStart(2,'0');
+    if (!aiTime) return `${hh}:${mm}`;
+    let l = aiTime.toString().toLowerCase().trim();
+    if (['now','asap','sasa','sai','sahii','saa hii','now now'].includes(l)) return `${hh}:${mm}`;
+    let m = l.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/);
+    if (m) { let h=parseInt(m[1]); let min=parseInt(m[2]||'0'); let ap=m[3]; if(ap==='pm'&&h<12)h+=12; if(ap==='am'&&h===12)h=0; return `${String(h).padStart(2,'0')}:${String(min).padStart(2,'0')}`; }
+    return `${hh}:${mm}`;
 }
-function toDisplayTime(time24) {
-    if (!time24 || time24==='Flexible') return 'now';
-    let [h,m] = time24.split(':').map(Number);
-    if (isNaN(h)) return time24;
-    let ampm = h>=12?'PM':'AM';
-    let hh = h%12||12;
-    return `${hh}:${String(m||0).padStart(2,'0')} ${ampm}`;
+function toDisplayTime(t) {
+    if (!t || t==='Flexible') return 'now';
+    let [h,m] = t.split(':').map(Number);
+    if (isNaN(h)) return t;
+    let ap = h>=12?'PM':'AM'; let hh = h%12||12;
+    return `${hh}:${String(m||0).padStart(2,'0')} ${ap}`;
 }
-function cleanContactNumber(jid) {
-    if (!jid) return "Contact via Bot";
+function getDirectChatLink(jid) {
     let num = jid.split('@')[0].replace(/[^0-9]/g,'');
-    if (num.length<9) return "Reply here";
     if (num.startsWith('0')) num='254'+num.slice(1);
     if (!num.startsWith('254') && num.length===9) num='254'+num;
     return `https://wa.me/${num}`;
@@ -77,9 +70,7 @@ function parseTimeQuick(input) {
     if (!input) return null;
     let t = input.toLowerCase().trim();
     const now = getNairobiNow();
-    if (['now','sai','sahii','saa hii','sasa','sasa hivi','now now','asap'].includes(t)) {
-        return `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
-    }
+    if (['now','sai','sahii','saa hii','sasa','sasa hivi','now now','asap'].includes(t)) return `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
     if (t==='kesho' || t==='tomorrow') return '09:00';
     let m = t.match(/^(\d{1,2})(\s*(am|pm))?$/);
     if (m) { let h=parseInt(m[1]); let ap=m[3]; if(ap==='pm'&&h<12)h+=12; if(ap==='am'&&h===12)h=0; return `${String(h).padStart(2,'0')}:00`; }
@@ -89,53 +80,46 @@ function parseTimeQuick(input) {
 }
 function isSimpleLocation(txt) {
     const t = txt.toLowerCase().trim();
-    const bad = ['hi','hey','sasa','mambo','need','ride','online','offline','filter','clear','next','now','sai','kesho','today','thanks','asante','ok','okay','hello'];
-    if (bad.includes(t)) return false;
-    if (t.includes('need a ride')) return false;
-    if (t.length < 3 || t.length > 30) return false;
+    const block = ['hi','hey','hello','sasa','mambo','niaje','need','ride','offer','driver','car','online','offline','filter','clear','next','now','sai','kesho','today','thanks','asante','ok','okay','need offer','offer ride','need to offer','i need','available','requests','show','all','see','my','trip'];
+    if (block.some(b => t===b || t.includes(b))) return false;
+    if (t.length < 3 || t.length > 25) return false;
     if (/^\d+$/.test(t)) return false;
     if (parseTimeQuick(t)) return false;
-    return /^[a-zA-Z\s,]+$/.test(t);
+    if (!/^[a-zA-Z\s]+$/.test(t)) return false;
+    if (t.split(' ').length > 3) return false;
+    return true;
 }
 
+// WhatsApp Start
 async function startWhatsApp() {
     if (!fs.existsSync(AUTH_PATH)) fs.mkdirSync(AUTH_PATH, { recursive: true });
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_PATH);
     const { version } = await fetchLatestBaileysVersion();
-    sock = makeWASocket({
-        version, auth: state, logger: pino({ level: 'silent' }),
-        printQRInTerminal: false, browser: ["Rideschat","Chrome","1.0.0"],
-        shouldSyncHistoryMessage: () => false, syncFullHistory: false, markOnlineOnConnect: false,
-        getMessage: async () => undefined
-    });
+    sock = makeWASocket({ version, auth: state, logger: pino({ level: 'silent' }), browser: ["Rideschat","Chrome","1.0"], shouldSyncHistoryMessage: () => false, syncFullHistory: false, markOnlineOnConnect: false, getMessage: async () => undefined });
     sock.ev.on('creds.update', saveCreds);
-    sock.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect, qr } = update;
-        if (qr) { qrLast = qr; console.log("QR READY"); }
-        if (connection==='open') { console.log('Connected!'); qrLast=null; }
+    sock.ev.on('connection.update', async (u) => {
+        const { connection, lastDisconnect, qr } = u;
+        if (qr) qrLast = qr;
+        if (connection==='open') { console.log('WA Connected'); qrLast=null; }
         if (connection==='close') {
-            const statusCode = lastDisconnect?.error?.output?.statusCode;
+            const code = lastDisconnect?.error?.output?.statusCode;
             qrLast=null; sock=null;
-            if (statusCode===DisconnectReason.loggedOut || statusCode===401) {
-                if (fs.existsSync(AUTH_PATH)) fs.rmSync(AUTH_PATH,{recursive:true,force:true});
-            }
+            if (code===DisconnectReason.loggedOut || code===401) { if (fs.existsSync(AUTH_PATH)) fs.rmSync(AUTH_PATH,{recursive:true,force:true}); }
             setTimeout(startWhatsApp,5000);
         }
     });
     sock.ev.on('messages.upsert', async ({ messages }) => {
         try {
-            if (!messages ||!messages[0]) return;
+            if (!messages?.[0]) return;
             const msg = messages[0];
             if (!msg.message || msg.key.fromMe) return;
             const remoteJid = msg.key.remoteJid || "";
             if (remoteJid==='status@broadcast' || remoteJid.includes('@g.us')) return;
-
             let text = msg.message.conversation || msg.message.extendedTextMessage?.text || msg.message.imageMessage?.caption || "";
             if (msg.message.buttonsResponseMessage) text = msg.message.buttonsResponseMessage.selectedButtonId || "";
             if (msg.message.templateButtonReplyMessage) text = msg.message.templateButtonReplyMessage.selectedId || "";
             if (msg.message.listResponseMessage) text = msg.message.listResponseMessage.singleSelectReply?.selectedRowId || "";
             if (!text) return;
-
             let realPhone = remoteJid;
             if (remoteJid.includes('@lid')) {
                 if (msg.key.participant &&!msg.key.participant.includes('@lid')) realPhone = msg.key.participant;
@@ -143,162 +127,228 @@ async function startWhatsApp() {
             }
             console.log(`MSG ${realPhone}: ${text}`);
             await handleRideLogic(remoteJid, text, realPhone);
-        } catch (e) {
-            if (e.message && e.message.includes('Bad MAC')) return;
-            console.error('upsert error:', e.message);
-        }
+        } catch(e) { if (e.message?.includes('Bad MAC')) return; console.error(e.message); }
     });
 }
 startWhatsApp();
 
+// AI
 var SYSTEM_PROMPT = `You are Rideschat Kenya. Current: {TODAY_INFO} [{TODAY_DATE}] {GREETING}. Draft: {CONTEXT_DRAFT}
 Classify:
-1. CHITCHAT: Hi,Hey,Mambo,Weather,Fare,How are you,Thanks -> {"role":"chat","reply":null}
-2. RIDE: Extract from/to/date/time. Single word location is valid.
-3. COMMAND: TAKE 1,TAKE_1,ONLINE,OFFLINE,FILTER Juja,CLEAR FILTERS,NEXT
+1. CHITCHAT: Hi,How are you,Weather -> {"role":"chat"}
+2. RIDE: Extract from/to/date/time
+3. COMMAND: TAKE 1,ONLINE,OFFLINE,FILTER Juja,CLEAR FILTERS
 Return ONLY JSON:
-{"role":"rider|driver|command|chat","command":"ONLINE|OFFLINE|SHOW_REQUESTS|TAKE|FILTER|CLEAR_FILTERS|NEXT|null","filter":string|null,"takeId":number|null,"from":string|null,"to":string|null,"date":"YYYY-MM-DD|today|tomorrow|null","time":"HH:MM|now|null","seats":number|null,"bags":number,"girls_only":bool,"pool_allowed":true,"rating":null}
+{"role":"rider|driver|command|chat","command":"ONLINE|OFFLINE|SHOW_REQUESTS|TAKE|FILTER|CLEAR_FILTERS|NEXT|null","filter":string|null,"takeId":number|null,"from":string|null,"to":string|null,"date":"today|tomorrow|null","time":"HH:MM|now|null","seats":number|null}
 `;
 
 async function parseWithAI(msg, contextDraft={}) {
     var now = getNairobiNow();
-    var tomorrow = new Date(now); tomorrow.setDate(now.getDate()+1);
-    var todayInfo = now.toLocaleDateString('en-US',{weekday:'long'})+" "+now.toISOString().split('T')[0];
+    var todayInfo = now.toLocaleDateString('en-US',{weekday:'long'})+" "+now.toISOString().split('T')[0]+" "+now.toLocaleTimeString('en-KE',{hour:'2-digit',minute:'2-digit'});
     var greeting = getTimeGreeting();
-    var systemPrompt = SYSTEM_PROMPT.replaceAll("{TODAY_INFO}",todayInfo).replaceAll("{TODAY_DATE}",now.toISOString().split('T')[0]).replaceAll("{GREETING}",greeting).replaceAll("{CONTEXT_DRAFT}",JSON.stringify(contextDraft));
+    var prompt = SYSTEM_PROMPT.replaceAll("{TODAY_INFO}",todayInfo).replaceAll("{TODAY_DATE}",now.toISOString().split('T')[0]).replaceAll("{GREETING}",greeting).replaceAll("{CONTEXT_DRAFT}",JSON.stringify(contextDraft));
     var apiKey = process.env.GROQ_API_KEY;
-    var models = ["openai/gpt-oss-20b","openai/gpt-oss-120b","llama-3.3-70b-versatile"];
+    var models = ["openai/gpt-oss-20b","llama-3.3-70b-versatile"];
     for (var i=0;i<models.length;i++) {
         try {
             var res = await axios.post("https://api.groq.com/openai/v1/chat/completions",
-                { model: models[i], messages: [{role:"system",content:systemPrompt},{role:"user",content:`Message: "${msg}"`}], temperature:0.2, response_format:{type:"json_object"} },
-                { headers:{ "Authorization":`Bearer ${apiKey}`, "Content-Type":"application/json"} }
+                { model: models[i], messages: [{role:"system",content:prompt},{role:"user",content:msg}], temperature:0.2, response_format:{type:"json_object"} },
+                { headers:{ "Authorization":`Bearer ${apiKey}` } }
             );
             var data = JSON.parse(res.data.choices[0].message.content.trim());
             if (data.date) data.date=getRealDate(data.date);
             if (data.time) data.time=getRealTime(data.time);
             return data;
-        } catch(err) {
-            if (i===models.length-1) throw err;
+        } catch(e) { if (i===models.length-1) throw e; }
+    }
+}
+async function answerGeneralQuestion(q, loc="Juja") {
+    try {
+        const greeting = getTimeGreeting();
+        const isWeather = q.toLowerCase().includes('weather') || q.toLowerCase().includes('rain');
+        let sys = `You are Rideschat, brief. ${greeting}. Location ${loc}. Reply 1-2 lines max, no emojis. If greeting: "${greeting}! Karibu Rideschat. Say: Niko Juja nataka kuenda Thika sai". If weather: 1 line only.`;
+        const res = await axios.post("https://api.groq.com/openai/v1/chat/completions", {
+            model: "openai/gpt-oss-20b", messages: [{role:"system",content:sys},{role:"user",content:q}], temperature:0.6
+        }, { headers:{ "Authorization":`Bearer ${process.env.GROQ_API_KEY}` } });
+        return res.data.choices[0].message.content.trim();
+    } catch(e) { return null; }
+}
+
+// Senders
+async function sendGupshupMessage(toJid, txt) {
+    if (!toJid||!sock) return;
+    try { let jid = toJid.includes('@')?toJid:toJid.replace('+','').trim()+'@s.whatsapp.net'; await sock.sendMessage(jid,{text:txt}); } catch(e){console.error(e.message);}
+}
+async function sendRidesList(toJid, rides, title="RIDES:") {
+    if (!rides || rides.length===0) { await sendGupshupMessage(toJid, `${title}\nNo rides now. Stay ONLINE or FILTER`); return; }
+    let list = rides.slice(0,10).map(r => `#${r.id} ${r.from.split(',')[0].substring(0,15)} -> ${r.to.split(',')[0].substring(0,15)} | ${r.seats||1}p | ${toDisplayTime(r.time)}`).join('\n');
+    await sendGupshupMessage(toJid, `${title}\n${list}\n\nReply TAKE 22 to accept, or OFFER 22 for 200`);
+}
+
+// Chat bridge
+async function checkAndForwardChat(phoneJid, text, realPhone) {
+    const userPhoneKey = realPhone || phoneJid;
+    const lower = text.toLowerCase().trim();
+    const block = ['take','filter','clear','online','offline','need','show','next','delete','end ride','accept','offer','can do','available'];
+    if (block.some(b => lower.startsWith(b))) return false;
+    let chat = activeChats[userPhoneKey];
+    if (!chat) {
+        const threeHoursAgo = new Date(Date.now() - 3*60*60*1000);
+        let ride = await RideRequest.findOne({ where: { status:'TAKEN', updatedAt:{[Op.gt]:threeHoursAgo}, [Op.or]:[{phone:userPhoneKey},{driverPhone:userPhoneKey}] }, order:[['updatedAt','DESC']] });
+        if (ride) {
+            let other = ride.phone===userPhoneKey? ride.driverPhone : ride.phone;
+            if (other) { chat={with:other, rideId:ride.id}; activeChats[userPhoneKey]=chat; activeChats[other]={with:userPhoneKey, rideId:ride.id}; }
         }
     }
-}
-
-async function answerGeneralQuestion(question, userLocation="Juja") {
-    try {
-        const now = getNairobiNow();
-        const timeStr = now.toLocaleString('en-KE', { timeZone: 'Africa/Nairobi', weekday:'long', hour:'2-digit', minute:'2-digit' });
-        const greeting = getTimeGreeting();
-        const res = await axios.post("https://api.groq.com/openai/v1/chat/completions", {
-            model: "openai/gpt-oss-20b",
-            messages: [
-                { role: "system", content: `You are Rideschat Kenya, friendly. Current: ${timeStr} EAT (${greeting}), location: ${userLocation}.
-- Greeting: reply "${greeting}! Karibu Rideschat." + "Say: Niko Juja nataka kuenda Thika sai"
-- Weather: Say typical weather in ${userLocation}, advise check Google for live. 2 lines max.
-- Other: answer short 2 lines, then ask location for ride.
-- No emojis overload, max 1 emoji.
-- Never say "I'm not sure".` },
-                { role: "user", content: question }
-            ],
-            temperature: 0.7
-        }, { headers: { "Authorization": `Bearer ${process.env.GROQ_API_KEY}` } });
-        return res.data.choices[0].message.content.trim();
-    } catch (e) { return null; }
-}
-
-async function sendGupshupMessage(toJid, messageText) {
-    if (!toJid||!sock) return;
-    try {
-        let jid = toJid.includes('@')?toJid:toJid.replace('+','').trim()+'@s.whatsapp.net';
-        await sock.sendMessage(jid,{text:messageText});
-    } catch(err){console.error('Send error:',err.message);}
-}
-
-async function sendRideButton(toJid, ride) {
-    if (!toJid||!sock) return;
-    try {
-        let jid = toJid.includes('@')? toJid : toJid.replace('+','').trim() + '@s.whatsapp.net';
-        let from = ride.from.split(',')[0].substring(0,18).trim();
-        let to = ride.to.split(',')[0].substring(0,18).trim();
-        let when = toDisplayTime(ride.time);
-        let ppl = ride.people || ride.seats || 1;
-        let text = `#${ride.id} ${from} -> ${to} | ${ppl}p | ${when}`;
-
-        await sock.sendMessage(jid, {
-            text: text,
-            footer: "Rideschat - Tap to accept",
-            templateButtons: [
-                { index: 1, quickReplyButton: { displayText: `TAKE #${ride.id}`, id: `TAKE_${ride.id}` } },
-                { index: 2, quickReplyButton: { displayText: `VIEW #${ride.id}`, id: `VIEW_${ride.id}` } }
-            ]
-        });
-    } catch(e){
-        console.error('Button fail:', e.message);
-        await sendGupshupMessage(toJid, `#${ride.id} ${ride.from} -> ${ride.to} | ${toDisplayTime(ride.time)}\nReply TAKE ${ride.id}`);
+    if (chat?.with) {
+        let ride = await RideRequest.findById(chat.rideId);
+        let sender = ride && ride.phone===userPhoneKey? "Rider" : "Driver";
+        await sendGupshupMessage(chat.with, `${sender} #${chat.rideId}: ${text}\n\nReply here to respond`);
+        await sendGupshupMessage(phoneJid, `Sent to ${sender.toLowerCase()}`);
+        return true;
     }
+    return false;
 }
 
+// Main logic
 async function handleRideLogic(phoneJid, text, realPhone) {
     try {
         const lowerText = text.toLowerCase().trim();
         const userPhoneKey = realPhone||phoneJid;
-        if (['okay','ok','cool','thx','thanks'].includes(lowerText)) return;
-        if (lowerText.includes('need a ride') || lowerText === 'need ride') clearSession(userPhoneKey);
+
+        if (['okay','ok','cool','thx','thanks','asante'].includes(lowerText)) return;
+
+        // END RIDE
+        if (['end ride','complete','trip done','cancel ride','done'].includes(lowerText)) {
+            for (let k in activeChats) { if (k===userPhoneKey || activeChats[k]?.with===userPhoneKey) delete activeChats[k]; }
+            await sendGupshupMessage(phoneJid, "Trip ended. Thanks for using Rideschat! Rate 1-5.\nNeed another? Say: Need ride");
+            return;
+        }
+
+        // Forward chat if in active ride
+        if (await checkAndForwardChat(phoneJid, text, realPhone)) return;
+
+        // Driver wants to see all / offer flow
+        if (lowerText.includes('offer') && lowerText.includes('ride')) {
+            let u = await User.getOrCreate(userPhoneKey);
+            let loc = "Juja";
+            const m = lowerText.match(/from\s+([a-z]+)/);
+            if (m) loc = m[1];
+            await u.setOnline(loc,2);
+            let nearby = await RideRequest.getNearby(u.location);
+            await sendGupshupMessage(phoneJid, `ONLINE: ${u.location} | ${u.rating.toFixed(1)}`);
+            await sendRidesList(phoneJid, nearby, `${nearby.length} RIDES NEAR ${u.location.toUpperCase()}:`);
+            clearSession(userPhoneKey);
+            return;
+        }
+        if (lowerText.includes('see all') || lowerText.includes('available rides') || lowerText.includes('show requests') || lowerText.includes('need to see')) {
+            let nearby = await RideRequest.getNearby("Juja");
+            await sendRidesList(phoneJid, nearby, `${nearby.length} RIDES IN JUJA:`);
+            clearSession(userPhoneKey);
+            return;
+        }
+        if (lowerText.includes('need a ride') || lowerText==='need ride') clearSession(userPhoneKey);
 
         if (lowerText.startsWith('filter ')) {
             let filterLoc = text.substring(7).trim();
             let u = await User.getOrCreate(userPhoneKey);
             u.filterFrom=filterLoc; await u.save();
             let nearby = await RideRequest.getNearby(filterLoc);
-            if (nearby.length===0) await sendGupshupMessage(phoneJid,`Filter: ${filterLoc}\nNo rides now.`);
-            else {
-                await sendGupshupMessage(phoneJid,`Filter: ${filterLoc} | ${nearby.length} rides - Tap TAKE:`);
-                for (let r of nearby.slice(0,5)) { await sendRideButton(phoneJid,r); await new Promise(res=>setTimeout(res,400)); }
-            }
+            await sendRidesList(phoneJid, nearby, `Filter ${filterLoc} | ${nearby.length} rides`);
             return;
         }
-        if (lowerText==='clear filters'||lowerText==='clear filter') {
+        if (lowerText==='clear filters' || lowerText==='clear filter') {
             let u = await User.getOrCreate(userPhoneKey); u.filterFrom=null; await u.save();
             let nearby = await RideRequest.getNearby(u.location||'Juja');
-            await sendGupshupMessage(phoneJid,`Filters cleared - ${nearby.length} rides`);
-            for (let r of nearby.slice(0,5)) { await sendRideButton(phoneJid,r); await new Promise(res=>setTimeout(res,400)); }
+            await sendRidesList(phoneJid, nearby, `Filters cleared - ${nearby.length} rides`);
             return;
         }
 
         const takeMatch = lowerText.match(/^take[_\s]*(\d+)$/i);
-        const viewMatch = lowerText.match(/^view[_\s]*(\d+)$/i);
-        var user = await User.getOrCreate(userPhoneKey);
-        var session = getSession(userPhoneKey);
+        const offerMatch = lowerText.match(/(?:offer|can do|i can).*?#?(\d+)/);
 
-        if (viewMatch) {
-            let id = parseInt(viewMatch[1],10);
-            let ride = await RideRequest.findById(id);
-            if (ride) await sendGupshupMessage(phoneJid, `Trip #${ride.id}\n${ride.from} -> ${ride.to}\nWhen: ${toDisplayTime(ride.time)} Today\nContact: ${cleanContactNumber(ride.phone)}\nReply TAKE ${ride.id} to accept`);
+        // OFFER: Driver offers ride before TAKE
+        if (offerMatch &&!takeMatch) {
+            let rideId = parseInt(offerMatch[1],10);
+            let ride = await RideRequest.findById(rideId);
+            if (!ride || ride.status!=='PENDING') { await sendGupshupMessage(phoneJid, `Ride #${rideId} not available`); return; }
+            let driverLink = getDirectChatLink(userPhoneKey);
+            await sendGupshupMessage(ride.phone, `Driver offer for #${ride.id} ${ride.from} -> ${ride.to}\nDriver says: "${text}"\nDriver chat: ${driverLink}\n\nReply ACCEPT ${ride.id} to accept or chat here`);
+            await sendGupshupMessage(phoneJid, `Offer sent to rider #${ride.id}. Rider will reply.\nRider chat: ${getDirectChatLink(ride.phone)}`);
+            // store last offer
+            let s = getSession(userPhoneKey); s.draft.lastOffer = rideId; return;
+        }
+
+        // ACCEPT OFFER
+        const acceptMatch = lowerText.match(/^accept[_\s]*(\d+)$/i);
+        if (acceptMatch) {
+            let rideId = parseInt(acceptMatch[1],10);
+            let ride = await RideRequest.findById(rideId);
+            if (ride && ride.phone===userPhoneKey && ride.status==='PENDING') {
+                // Find driver who offered - search online nearby who sent offer
+                let drivers = await User.getOnlineNearby(ride.from);
+                if (drivers.length>0) {
+                    let driver = drivers[0];
+                    ride.driverPhone = driver.phone;
+                    await ride.updateStatus("TAKEN");
+                    await ride.save();
+                    activeChats[ride.phone] = { with: driver.phone, rideId: ride.id };
+                    activeChats[driver.phone] = { with: ride.phone, rideId: ride.id };
+                    await sendGupshupMessage(driver.phone, `Rider ACCEPTED #${ride.id} ${ride.from} -> ${ride.to}\nChat: ${getDirectChatLink(ride.phone)}\nReply here to chat`);
+                    await sendGupshupMessage(ride.phone, `Accepted! Driver ${getDirectChatLink(driver.phone)} will contact you. Chat here or tap link to WhatsApp directly.`);
+                } else {
+                    await sendGupshupMessage(phoneJid, `No driver available for #${rideId} now. Try again.`);
+                }
+                return;
+            }
+        }
+
+        // TAKE - final match with direct WhatsApp connect
+        if (takeMatch) {
+            let rideId = parseInt(takeMatch[1],10);
+            let ride = await RideRequest.findById(rideId);
+            if (ride && ride.status==='PENDING') {
+                await ride.updateStatus("TAKEN");
+                ride.driverPhone = userPhoneKey;
+                await ride.save();
+                activeChats[ride.phone] = { with: userPhoneKey, rideId: ride.id };
+                activeChats[userPhoneKey] = { with: ride.phone, rideId: ride.id };
+                let riderLink = getDirectChatLink(ride.phone);
+                let driverLink = getDirectChatLink(userPhoneKey);
+                await sendGupshupMessage(phoneJid, `MATCHED #${ride.id} ${ride.from} -> ${ride.to} ${toDisplayTime(ride.time)}\n\nRider: ${riderLink} (tap to open WhatsApp)\nYou can also chat here - type message\nEND RIDE when done`);
+                await sendGupshupMessage(ride.phone, `DRIVER FOUND #${ride.id} ${ride.from} -> ${ride.to}\nDriver: ${driverLink} (tap to chat/call)\nReply here to chat with driver`);
+            } else {
+                await sendGupshupMessage(phoneJid, `Ride #${takeMatch[1]} already taken`);
+                let nearby = await RideRequest.getNearby("Juja");
+                await sendRidesList(phoneJid, nearby, `${nearby.length} RIDES:`);
+            }
             return;
         }
 
+        var user = await User.getOrCreate(userPhoneKey);
+        var session = getSession(userPhoneKey);
+
+        // Quick FROM / TO / TIME bypass AI
         if (!session.draft.from && isSimpleLocation(text)) {
-            session.draft.from = text.trim();
-            session.draft.role = 'rider';
-            await sendGupshupMessage(phoneJid,`FROM: ${session.draft.from} saved\n\nWHERE TO?\nEg: Thika`);
+            session.draft.from = text.trim(); session.draft.role='rider';
+            await sendGupshupMessage(phoneJid, `FROM: ${session.draft.from} saved\n\nWHERE TO? Eg: Thika`);
             return;
         }
         if (session.draft.from &&!session.draft.to && isSimpleLocation(text)) {
             session.draft.to = text.trim();
-            await sendGupshupMessage(phoneJid,`TO: ${session.draft.to} saved\n\nWHAT TIME?\nReply: Now / Sai / 9 / 3 PM`);
+            await sendGupshupMessage(phoneJid, `TO: ${session.draft.to} saved\n\nWHAT TIME? Reply: Now / 9 / 3 PM`);
             return;
         }
         if (session.draft.from && session.draft.to &&!session.draft.time) {
-            let quickTime = parseTimeQuick(lowerText);
-            if (quickTime) {
-                session.draft.time = quickTime;
-                session.draft.date = getRealDate('today');
-                var rideReq = await RideRequest.createCustom(userPhoneKey, session.draft);
-                await sendGupshupMessage(phoneJid,`RIDE #${rideReq.id} CREATED\n${rideReq.from} -> ${rideReq.to}\n${toDisplayTime(rideReq.time)} Today\nAlerting drivers...`);
-                var drivers = await User.getOnlineNearby(rideReq.from);
-                var currentClean = userPhoneKey.split('@')[0].replace(/[^0-9]/g,'');
-                var filtered = drivers.filter(d=>{var dc=(d.phone||'').split('@')[0].replace(/[^0-9]/g,''); return dc!==currentClean;});
-                for (let d of filtered) { await sendRideButton(d.phone, rideReq); }
+            let qt = parseTimeQuick(lowerText);
+            if (qt) {
+                session.draft.time = qt; session.draft.date = getRealDate('today');
+                var rr = await RideRequest.createCustom(userPhoneKey, session.draft);
+                await sendGupshupMessage(phoneJid, `RIDE #${rr.id} CREATED\n${rr.from} -> ${rr.to}\n${toDisplayTime(rr.time)} Today\nAlerting drivers...`);
+                var drvs = await User.getOnlineNearby(rr.from);
+                var clean = userPhoneKey.split('@')[0].replace(/[^0-9]/g,'');
+                var filtered = drvs.filter(d=>{var dc=(d.phone||'').split('@')[0].replace(/[^0-9]/g,''); return dc!==clean;});
+                for (let d of filtered) await sendGupshupMessage(d.phone, `#${rr.id} ${rr.from} -> ${rr.to} | ${toDisplayTime(rr.time)}\nReply TAKE ${rr.id} or OFFER ${rr.id}`);
                 clearSession(userPhoneKey); return;
             }
         }
@@ -306,78 +356,44 @@ async function handleRideLogic(phoneJid, text, realPhone) {
         var ai = await parseWithAI(text, session.draft);
 
         if (ai.role==='chat') {
-            const userLoc = user.location || session.draft.from || "Juja";
-            let reply = await answerGeneralQuestion(text, userLoc);
-            if (!reply) reply = `${getTimeGreeting()}! Karibu Rideschat.\nSay: Niko Juja nataka kuenda Thika sai`;
+            let reply = await answerGeneralQuestion(text, user.location||session.draft.from||"Juja");
+            if (!reply) reply = `${getTimeGreeting()}! Karibu Rideschat. Say: Niko Juja nataka kuenda Thika sai`;
             await sendGupshupMessage(phoneJid, reply);
             return;
         }
 
         let newFrom = ai.from||null; let newTo = ai.to||null;
         if (session.draft.from &&!session.draft.to && newFrom &&!newTo) { newTo=newFrom; newFrom=session.draft.from; }
-
-        session.draft = {
-            role: ai.role||session.draft.role||'rider',
-            from: newFrom||session.draft.from||null,
-            to: newTo||session.draft.to||null,
-            date: ai.date||session.draft.date||null,
-            time: ai.time||session.draft.time||null,
-            bags: ai.bags??session.draft.bags??0,
-            girls_only: false
-        };
-
-        if (takeMatch) { ai.role='command'; ai.command='TAKE'; ai.takeId=parseInt(takeMatch[1],10); }
+        session.draft = { role: ai.role||session.draft.role||'rider', from: newFrom||session.draft.from||null, to: newTo||session.draft.to||null, date: ai.date||session.draft.date||null, time: ai.time||session.draft.time||null, bags:0 };
 
         if (ai.role==='command') {
             if (ai.command==='ONLINE') {
                 await user.setOnline(ai.from||session.draft.from||"Juja",2);
                 var nearby = await RideRequest.getNearby(user.location);
-                if (nearby.length===0) {
-                    await sendGupshupMessage(phoneJid,`ONLINE: ${user.location} | ${user.rating.toFixed(1)}\nNo rides now. Stay ONLINE.\n${getTimeGreeting()}!`);
-                } else {
-                    await sendGupshupMessage(phoneJid,`ONLINE: ${user.location} | ${user.rating.toFixed(1)}\n${nearby.length} RIDES - Tap TAKE:`);
-                    for (let r of nearby.slice(0,5)) { await sendRideButton(phoneJid,r); await new Promise(res=>setTimeout(res,400)); }
-                    if (nearby.length>5) await sendGupshupMessage(phoneJid,`+ ${nearby.length-5} more. Type NEXT`);
-                }
+                await sendGupshupMessage(phoneJid, `ONLINE: ${user.location} | ${user.rating.toFixed(1)}`);
+                await sendRidesList(phoneJid, nearby, `${nearby.length} RIDES NEAR ${user.location.toUpperCase()}:`);
             }
-            if (ai.command==='OFFLINE') { await user.setOffline(); clearSession(userPhoneKey); await sendGupshupMessage(phoneJid,`OFFLINE - ${getTimeGreeting()}!`); }
+            if (ai.command==='OFFLINE') { await user.setOffline(); clearSession(userPhoneKey); await sendGupshupMessage(phoneJid, `OFFLINE - ${getTimeGreeting()}!`); }
             if (ai.command==='SHOW_REQUESTS') {
                 var nearby2 = await RideRequest.getNearby("Juja");
-                if (nearby2.length===0) await sendGupshupMessage(phoneJid,`No rides in Juja`);
-                else {
-                    await sendGupshupMessage(phoneJid,`${nearby2.length} RIDES IN JUJA:`);
-                    for (let r of nearby2.slice(0,5)) { await sendRideButton(phoneJid,r); await new Promise(res=>setTimeout(res,400)); }
-                }
-            }
-            if (ai.command==='TAKE') {
-                var ride = await RideRequest.findById(ai.takeId);
-                if (ride && ride.status==='PENDING') {
-                    await ride.updateStatus("TAKEN");
-                    await sendGupshupMessage(phoneJid,`MATCHED #${ride.id}!\n${ride.from} -> ${ride.to}\n${toDisplayTime(ride.time)}\nRider: ${cleanContactNumber(ride.phone)}\nCall now!`);
-                    await sendGupshupMessage(ride.phone,`DRIVER FOUND!\nTrip ${ride.from} -> ${ride.to}\nDriver: ${cleanContactNumber(userPhoneKey)}\nDriver will call you`);
-                } else {
-                    await sendGupshupMessage(phoneJid,`Ride #${ai.takeId} already taken.`);
-                }
+                await sendRidesList(phoneJid, nearby2, `${nearby2.length} RIDES IN JUJA:`);
             }
             return;
         }
 
         if (session.draft.role==='rider' && (!session.draft.from||!session.draft.to)) {
-            if (!session.draft.from) await sendGupshupMessage(phoneJid,`WHERE FROM?\nEg: Juja`);
-            else await sendGupshupMessage(phoneJid,`WHERE TO?\nYou are in ${session.draft.from}, where to? Eg: Thika`);
+            if (!session.draft.from) await sendGupshupMessage(phoneJid, `WHERE FROM? Eg: Juja`);
+            else await sendGupshupMessage(phoneJid, `WHERE TO? You are in ${session.draft.from}, where to? Eg: Thika`);
             return;
         }
-        if (session.draft.role==='rider' &&!session.draft.time) {
-            await sendGupshupMessage(phoneJid,`WHAT TIME?\nReply: Now / Sai / 9 / 3 PM`);
-            return;
-        }
+        if (session.draft.role==='rider' &&!session.draft.time) { await sendGupshupMessage(phoneJid, `WHAT TIME? Reply: Now / Sai / 9 / 3 PM`); return; }
         if (session.draft.role==='rider') {
             var rideReq2 = await RideRequest.createCustom(userPhoneKey, session.draft);
-            await sendGupshupMessage(phoneJid,`RIDE #${rideReq2.id} CREATED\n${rideReq2.from} -> ${rideReq2.to}\n${toDisplayTime(rideReq2.time)} Today\nAlerting drivers...`);
+            await sendGupshupMessage(phoneJid, `RIDE #${rideReq2.id} CREATED\n${rideReq2.from} -> ${rideReq2.to}\n${toDisplayTime(rideReq2.time)} Today\nAlerting drivers...`);
             var drivers2 = await User.getOnlineNearby(rideReq2.from);
-            var currentClean2 = userPhoneKey.split('@')[0].replace(/[^0-9]/g,'');
-            var filtered2 = drivers2.filter(d=>{var dc=(d.phone||'').split('@')[0].replace(/[^0-9]/g,''); return dc!==currentClean2;});
-            for (let d of filtered2) { await sendRideButton(d.phone, rideReq2); }
+            var clean2 = userPhoneKey.split('@')[0].replace(/[^0-9]/g,'');
+            var f2 = drivers2.filter(d=>{var dc=(d.phone||'').split('@')[0].replace(/[^0-9]/g,''); return dc!==clean2;});
+            for (let d of f2) await sendGupshupMessage(d.phone, `#${rideReq2.id} ${rideReq2.from} -> ${rideReq2.to} | ${toDisplayTime(rideReq2.time)}\nReply TAKE ${rideReq2.id} or OFFER ${rideReq2.id} with price`);
             clearSession(userPhoneKey); return;
         }
     } catch(err){ console.error('Error:',err.stack||err.message); }
@@ -385,9 +401,11 @@ async function handleRideLogic(phoneJid, text, realPhone) {
 
 setInterval(async()=>{ try{ if (RideRequest.clearExpired) await RideRequest.clearExpired(); if (RideOffer.clearExpired) await RideOffer.clearExpired(); }catch(e){} },15*60*1000);
 
-app.get('/qr',(req,res)=>{ if (!qrLast) return res.send("<h1>Connected! Bot Live</h1>"); var qrImage="https://api.qrserver.com/v1/create-qr-code/?size=300x300&data="+encodeURIComponent(qrLast); res.send("<h1>Scan Safaricom line</h1><p>WhatsApp > Linked Devices > Link</p><img src='"+qrImage+"'/>"); });
-app.get('/ping',(req,res)=>{ res.send("Rideschat Kenya Alive"); });
-app.get('/',(req,res)=>{ res.send("Rideschat Kenya LIVE - Go to /qr"); });
-app.get('/clearbad', async (req,res)=>{ await RideRequest.destroy({ where: { status: 'PENDING' } }); res.send("Cleared old rides"); });
+app.get('/qr',(req,res)=>{ if (!qrLast) return res.send("<h1>Connected!</h1>"); var qrImage="https://api.qrserver.com/v1/create-qr-code/?size=300x300&data="+encodeURIComponent(qrLast); res.send(`<h1>Scan</h1><img src='${qrImage}'/>`); });
+app.get('/ping',(req,res)=>{ res.send("Alive"); });
+app.get('/',(req,res)=>{ res.send("Rideschat LIVE - /qr"); });
+app.get('/clearall', async (req,res)=>{ await RideRequest.destroy({ where: {} }); await RideOffer.destroy({ where: {} }); res.send("All rides deleted"); });
+app.get('/cleardb', async (req,res)=>{ await sequelize.sync({ force: true }); res.send("Full DB wiped, IDs reset to 1"); });
+
 var PORT = process.env.PORT||10000;
-app.listen(PORT,()=>{ console.log("Rideschat Kenya running on port "+PORT); });
+app.listen(PORT,()=>{ console.log("Running on "+PORT); });
