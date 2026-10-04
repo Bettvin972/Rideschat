@@ -47,8 +47,8 @@ function getRealDate(aiDate) {
     const now = getNairobiNow();
     if (!aiDate) return now.toISOString().split('T')[0];
     const s = aiDate.toString().toLowerCase();
-    if (['today','now','null','asap','leo','sai','sahii'].includes(s)) return now.toISOString().split('T')[0];
-    if (['tomorrow','kesho'].includes(s)) { let t = new Date(now); t.setDate(now.getDate()+1); return t.toISOString().split('T')[0]; }
+    if (['today','now','null','asap'].includes(s)) return now.toISOString().split('T')[0];
+    if (['tomorrow'].includes(s)) { let t = new Date(now); t.setDate(now.getDate()+1); return t.toISOString().split('T')[0]; }
     return aiDate;
 }
 function getRealTime(aiTime) {
@@ -57,7 +57,7 @@ function getRealTime(aiTime) {
     const mm = String(now.getMinutes()).padStart(2,'0');
     if (!aiTime) return `${hh}:${mm}`;
     let l = aiTime.toString().toLowerCase().trim();
-    if (['now','asap','sasa','sai','sahii','saa hii','now now'].includes(l)) return `${hh}:${mm}`;
+    if (['now','asap','now now'].includes(l)) return `${hh}:${mm}`;
     let m = l.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/);
     if (m) { let h=parseInt(m[1]); let min=parseInt(m[2]||'0'); let ap=m[3]; if(ap==='pm'&&h<12)h+=12; if(ap==='am'&&h===12)h=0; return `${String(h).padStart(2,'0')}:${String(min).padStart(2,'0')}`; }
     return `${hh}:${mm}`;
@@ -79,8 +79,8 @@ function parseTimeQuick(input) {
     if (!input) return null;
     let t = input.toLowerCase().trim();
     const now = getNairobiNow();
-    if (['now','sai','sahii','saa hii','sasa','sasa hivi','now now','asap'].includes(t)) return `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
-    if (t==='kesho' || t==='tomorrow') return '09:00';
+    if (['now','now now','asap'].includes(t)) return `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+    if (t==='tomorrow') return '09:00';
     let m = t.match(/^(\d{1,2})(\s*(am|pm))?$/);
     if (m) { let h=parseInt(m[1]); let ap=m[3]; if(ap==='pm'&&h<12)h+=12; if(ap==='am'&&h===12)h=0; return `${String(h).padStart(2,'0')}:00`; }
     let m2 = t.match(/(\d{1,2}):(\d{2})(\s*(am|pm))?/);
@@ -90,10 +90,10 @@ function parseTimeQuick(input) {
 function isSimpleLocation(txt) {
     const t = txt.toLowerCase().trim();
     const block = [
-        'hi','hey','hello','sasa','mambo','niaje','need','ride','offer','driver','car','online','offline','filter','clear','next','now','sai','kesho','today',
-        'thanks','thank','thank you','thankyou','asante','asante sana','ok','okay','yes','yeah','yep','yebo','sawa','poa','cool','thx',
+        'hi','hey','hello','need','ride','offer','driver','car','online','offline','filter','clear','next','now','today','tomorrow',
+        'thanks','thank','thank you','thankyou','ok','okay','yes','yeah','yep','cool','thx',
         'need offer','offer ride','need to offer','i need','available','requests','show','all','see','my','trip','accept','take','end ride',
-        'who are you','what are you','help','what can you do','how does it work','what is','who is','where is','how can','how to','rate','rating','baboon'
+        'who are you','what are you','help','what can you do','how does it work','what is','who is','where is','how can','how to','rate','rating'
     ];
     if (block.some(b => t===b || t.startsWith(b+' ') || t.includes(b))) return false;
     if (t.length < 3 || t.length > 25) return false;
@@ -147,8 +147,8 @@ startWhatsApp();
 
 var SYSTEM_PROMPT = `You are Rideschat Kenya. Current: {TODAY_INFO} [{TODAY_DATE}] {GREETING}. Draft: {CONTEXT_DRAFT}
 Classify:
-1. CHITCHAT: Hi, Who are you, What can you do, Help, How does it work, Weather, What is baboon, Where is parliament -> {"role":"chat"}
-2. RIDE: Extract from/to/date/time - "from Juja to Thika", "Niko Juja nataka kuenda Thika sai" -> {"role":"rider", from, to}
+1. CHITCHAT: Hi, Who are you, What can you do, Help, How does it work, What is a baboon, Where is Kenya parliament -> {"role":"chat"}
+2. RIDE: Extract from/to/date/time - "from Juja to Thika now", "Juja to Thika at 9am today" -> {"role":"rider", from, to}
 3. COMMAND: TAKE 1, ONLINE, OFFLINE, FILTER Juja, CLEAR FILTERS -> {"role":"command"}
 Return ONLY JSON:
 {"role":"rider|driver|command|chat","command":"ONLINE|OFFLINE|SHOW_REQUESTS|TAKE|FILTER|CLEAR_FILTERS|NEXT|null","filter":string|null,"takeId":number|null,"from":string|null,"to":string|null,"date":"today|tomorrow|null","time":"HH:MM|now|null","seats":number|null}
@@ -175,38 +175,35 @@ async function parseWithAI(msg, contextDraft={}) {
     }
 }
 
-// OPTION C: Hybrid - answers general + redirects to rides
 async function answerGeneralQuestion(q, loc="Juja") {
     const lower = q.toLowerCase().trim();
     if (!lower || lower.length <= 2) return null;
     if (/^\d+$/.test(lower)) return null;
     if (['accept'].includes(lower)) return null;
-
     try {
         const greeting = getTimeGreeting();
-        let sys = `You are Rideschat Kenya - WhatsApp ride-sharing bot in Kenya.
+        let sys = `You are Rideschat Kenya - WhatsApp ride-sharing bot in Kenya. Respond ONLY in English.
 
 GOAL: Be helpful for general knowledge but always bring back to rides.
 
 RULES:
 - You connect RIDERS and DRIVERS.
-- RIDER says: "Need a ride from Juja to Thika now" or just "Juja" then "Thika" then "Now"
-- DRIVER says: "Online" or "Offer ride" to see open rides, then "4" or "TAKE 4" to accept
+- RIDER says: "Need a ride from Juja to Thika now"
+- DRIVER says: "Online" to see open rides, then "4" or "TAKE 4" to accept
 - When matched, rider and driver chat here. Say "END RIDE" to close.
 
 RESPONSE STYLE:
-- 2-3 lines max, friendly, no emojis.
+- 2-3 lines max, friendly English only, no emojis.
 - For Rideschat questions (Who are you / Help / How does it work): Explain Rideschat.
-  Example: "I'm Rideschat! I connect riders & drivers in Kenya. Riders say 'Need a ride from X to Y', drivers say 'Online' to see requests."
-- For general knowledge (What is baboon? Where is parliament? Thank you?):
-  Answer in 1 short factual sentence, then add redirect to rides in second sentence.
-  Examples:
+  Example: "I'm Rideschat! I connect riders and drivers in Kenya. Riders say 'Need a ride from X to Y', drivers say 'Online' to see requests."
+- For general knowledge (What is a baboon? Where is parliament? Thank you?):
+  Answer in 1 short factual English sentence, then add redirect to rides in second sentence.
   Q: "What is a baboon?" -> A: "A baboon is a large African monkey that lives in troops. Need a ride? Say 'Need a ride from Juja to Thika now'."
   Q: "Where is Kenya parliament?" -> A: "Kenya's Parliament is on Parliament Road in Nairobi CBD. Need a ride there? Just tell me where you're coming from."
   Q: "Thank you" -> A: "You're welcome! Need another ride? Say 'Need a ride from X to Y' or say 'Online' if you're a driver."
-  Q: "How are you?" -> A: "${greeting}! I'm good, ready to connect you to a ride. Where are you riding from today?"
-- For personal data like "Where is Kevavapi?" (a person): Say you don't have personal location data, but you can help them get a ride if they share location.
-- Never be rude, always redirect.
+  Q: "How are you?" -> A: "${greeting}! I'm doing well and ready to connect you to a ride. Where are you riding from today?"
+- For personal data like "Where is John?" (a person): Say you don't have personal location data, but you can help them get a ride if they share location.
+- Never be rude, always redirect to rides in English.
 
 Location context: ${loc}
 Current time: ${getNairobiNow().toLocaleTimeString()}`;
@@ -219,7 +216,7 @@ Current time: ${getNairobiNow().toLocaleTimeString()}`;
         }, { headers:{ "Authorization":`Bearer ${process.env.GROQ_API_KEY}` } });
         return res.data.choices[0].message.content.trim();
     } catch(e) {
-        return `${getTimeGreeting()}! I'm Rideschat - I connect riders & drivers in Kenya. Need a ride? Say: Need a ride from Juja to Thika now. Driver? Say: Online`;
+        return `${getTimeGreeting()}! I'm Rideschat - I connect riders and drivers in Kenya. Need a ride? Say: Need a ride from Juja to Thika now. Driver? Say: Online`;
     }
 }
 
@@ -258,7 +255,6 @@ async function handleRideLogic(phoneJid, text, realPhone) {
         const lowerText = text.toLowerCase().trim();
         const userPhoneKey = realPhone||phoneJid;
 
-        // 1. END RIDE - ALWAYS FIRST
         if (lowerText.includes('end ride') || ['complete','trip done','cancel ride','done','finished'].includes(lowerText)) {
             killChatFor(userPhoneKey);
             try {
@@ -270,26 +266,22 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             return;
         }
 
-        // 2. Ignore emojis only if NOT in active chat
         if (!activeChats[userPhoneKey]) {
             if (lowerText.includes('👍') || lowerText.includes('❤️') || lowerText.includes('😍')) {
                 if (lowerText.length < 5) return;
             }
         }
 
-        // 3. NEW SESSION - kill old chat
         const isNewStart = lowerText==='offline' || lowerText.startsWith('offline') || lowerText==='online' || lowerText.startsWith('online') || lowerText==='need a ride' || lowerText==='need ride' || lowerText.startsWith('need a ride') || lowerText.startsWith('filter ') || lowerText.includes('clear filter');
         if (isNewStart) {
             killChatFor(userPhoneKey);
             if (lowerText.includes('need a ride') || lowerText==='need ride') clearSession(userPhoneKey);
         }
 
-        // 4. IF IN ACTIVE CHAT -> FORWARD FIRST (fixes Yes bug)
         if (activeChats[userPhoneKey]) {
             if (await checkAndForwardChat(phoneJid, text, realPhone)) return;
         }
 
-        // 5. LOCATION - only if NOT in chat
         if (isSimpleLocation(text)) {
             var user = await User.getOrCreate(userPhoneKey);
             var session = getSession(userPhoneKey);
@@ -305,7 +297,6 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             }
         }
 
-        // 6. Single number TAKE
         if (/^\d+$/.test(lowerText)) {
             let rideId = parseInt(lowerText,10);
             let ride = await RideRequest.findById(rideId);
@@ -384,10 +375,9 @@ async function handleRideLogic(phoneJid, text, realPhone) {
         }
 
         var ai = await parseWithAI(text, session2.draft);
-        // OPTION C: Answers general + redirects
         if (ai.role==='chat') {
             let reply = await answerGeneralQuestion(text, user2.location||session2.draft.from||"Juja");
-            if (!reply) reply = `${getTimeGreeting()}! I'm Rideschat — I connect riders & drivers. Say: Need a ride from Juja to Thika now, or say Online if you're a driver.`;
+            if (!reply) reply = `${getTimeGreeting()}! I'm Rideschat — I connect riders and drivers. Say: Need a ride from Juja to Thika now, or say Online if you're a driver.`;
             await sendGupshupMessage(phoneJid, reply);
             return;
         }
@@ -406,7 +396,7 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             return;
         }
         if (session2.draft.role==='rider' && (!session2.draft.from||!session2.draft.to)) {
-            if (!session2.draft.from) await sendGupshupMessage(phoneJid, `WHERE FROM? Eg: Juja`);
+            if (!session2.draft.from) await sendGupshupMessage(phoneJid, `WHERE FROM? Example: Juja`);
             else await sendGupshupMessage(phoneJid, `Okay, from ${session2.draft.from} — where to?`);
             return;
         }
