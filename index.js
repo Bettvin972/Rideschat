@@ -181,7 +181,8 @@ Return strictly valid JSON with this format:
 RULES: 
 1. If text is like "TAKE 7", "TAKE 1" -> role MUST be "command", command MUST be "TAKE", takeId MUST be number. 
 2. If user mentions "now", "immediately", or a time like "3:30 PM", extract it into "time".
-3. Preserve existing non-null fields from CONTEXT_DRAFT unless user updates them.`;
+3. Preserve existing non-null fields from CONTEXT_DRAFT unless user updates them.
+4. If role is "chat", provide a friendly, concise greeting in "reply" explaining how to request or offer a ride.`;
 
 async function parseWithAI(msg, contextDraft = {}) {
     var now = new Date();
@@ -198,11 +199,13 @@ async function parseWithAI(msg, contextDraft = {}) {
     var apiKey = process.env.GROQ_API_KEY;
     if (!apiKey) throw new Error("GROQ_API_KEY missing in .env");
 
-    // Corrected Groq model strings with hyphens and dots
+    // Comprehensive Groq model fallback hierarchy
     var models = [
         "llama-3.3-70b-versatile",
         "llama-3.1-8b-instant",
-        "openai/gpt-oss-120b"
+        "llama3-70b-8192",
+        "llama3-8b-8192",
+        "mixtral-8x7b-32768"
     ];
 
     for (var i = 0; i < models.length; i++) {
@@ -285,6 +288,12 @@ async function handleRideLogic(phoneJid, text, realPhone) {
         var session = getSession(userPhoneKey);
 
         var ai = await parseWithAI(text, session.draft);
+
+        if (ai.role === 'chat') {
+            const defaultReply = ai.reply || `👋 ${toBoldSans("WELCOME TO RIDESCHAT KENYA!")}\n\nTo find or offer a ride, tell me your route and time.\n\nExample: \`Need ride from Juja to Thika at 3 PM\``;
+            await sendGupshupMessage(phoneJid, defaultReply);
+            return;
+        }
 
         // Merge AI output back into session draft to keep context alive
         session.draft = {
