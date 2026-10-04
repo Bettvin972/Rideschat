@@ -39,6 +39,14 @@ function getNairobiNow() {
     return new Date(new Date().toLocaleString('en-US', { timeZone: 'Africa/Nairobi' }));
 }
 
+function getTimeGreeting() {
+    const h = getNairobiNow().getHours();
+    if (h >= 5 && h < 12) return "Good morning ☀️";
+    if (h >= 12 && h < 15) return "Good afternoon 🌤️";
+    if (h >= 15 && h < 19) return "Good evening 🌇";
+    return "Sasa usiku 🌙";
+}
+
 function getRealDate(aiDate) {
     const now = getNairobiNow();
     if (!aiDate) return now.toISOString().split('T')[0];
@@ -89,6 +97,41 @@ function cleanContactNumber(jid) {
     return `https://wa.me/${num}`;
 }
 
+// ✅ NEW: Quick time parser for "Now" / "9" / "3pm" without AI
+function parseTimeQuick(input) {
+    if (!input) return null;
+    let t = input.toLowerCase().trim();
+    const now = getNairobiNow();
+    if (['now','sai','sahii','saa hii','sasa','sasa hivi','now now','asap','immediately','saa hii','sai'].includes(t)) {
+        return `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+    }
+    if (t === 'kesho' || t === 'tomorrow') return '09:00';
+    let m = t.match(/^(\d{1,2})(\s*(am|pm))?$/);
+    if (m) {
+        let h = parseInt(m[1]); let ap = m[3];
+        if (ap === 'pm' && h < 12) h += 12;
+        if (ap === 'am' && h === 12) h = 0;
+        return `${String(h).padStart(2,'0')}:00`;
+    }
+    let m2 = t.match(/^(\d{1,2}):(\d{2})(\s*(am|pm))?$/);
+    if (m2) {
+        let h = parseInt(m2[1]); let min = parseInt(m2[2]); let ap = m2[4];
+        if (ap === 'pm' && h < 12) h += 12;
+        if (ap === 'am' && h === 12) h = 0;
+        return `${String(h).padStart(2,'0')}:${String(min).padStart(2,'0')}`;
+    }
+    if (t.length <= 8) {
+        let m3 = t.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/);
+        if (m3) {
+            let h = parseInt(m3[1]); let min = parseInt(m3[2] || '0'); let ap = m3[3];
+            if (ap === 'pm' && h < 12) h += 12;
+            if (ap === 'am' && h === 12) h = 0;
+            return `${String(h).padStart(2,'0')}:${String(min).padStart(2,'0')}`;
+        }
+    }
+    return null;
+}
+
 async function startWhatsApp() {
     if (!fs.existsSync(AUTH_PATH)) fs.mkdirSync(AUTH_PATH, { recursive: true });
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_PATH);
@@ -126,7 +169,6 @@ async function startWhatsApp() {
             if (msg.message.protocolMessage) return;
 
             let text = msg.message.conversation || msg.message.extendedTextMessage?.text || msg.message.imageMessage?.caption || "";
-            // ✅ BAILEYS BUTTON CLICK HANDLER
             if (msg.message.buttonsResponseMessage) {
                 text = msg.message.buttonsResponseMessage.selectedButtonId || msg.message.buttonsResponseMessage.selectedDisplayText || "";
             }
@@ -150,22 +192,30 @@ async function startWhatsApp() {
 }
 startWhatsApp();
 
-var SYSTEM_PROMPT = `You are Rideschat Kenya assistant. Current: {TODAY_INFO} [{TODAY_DATE}]. Draft: {CONTEXT_DRAFT}
-Sheng keywords: niko=I am at, nataka kuenda/naenda/going=to, kutoka/from/froom=from, sai/sahii/saa hii/now=now, kesho=tomorrow, leo=today, beba=ride.
+// ✅ UPDATED PROMPT with GREETING
+var SYSTEM_PROMPT = `You are Rideschat Kenya assistant. Current: {TODAY_INFO} [{TODAY_DATE}] {GREETING}. Draft: {CONTEXT_DRAFT}
+Sheng: niko=I am at, nataka kuenda/naenda=to, kutoka/from=from, sai/sahii/saa hii/now=now, kesho=tomorrow, leo=today, beba=ride.
+
 Classify:
-1. GREETING -> {"role":"chat","reply":"👋 Sasa! Karibu Rideschat Kenya 🇰🇪\\nJust say: 'Need ride FROM to TO at TIME'\\nEg: 'Niko Juja nataka kuenda Thika sai'"}
-2. GENERAL Q -> {"role":"chat","reply":"[2-3 lines Sheng]"}
-3. RIDE: Extract JSON. "now" IS VALID TIME. "Denton to Irving now" -> from=Denton,to=Irving,date=today,time=now. "Niko juja city mall nataka kuenda thika" -> from=Juja City Mall,to=Thika,date=today,time=null.
-4. COMMAND: "TAKE 1","TAKE_1","ONLINE","OFFLINE","FILTER Juja","CLEAR FILTERS","NEXT"
+1. GREETING/CHITCHAT: "Hi","Hey","Mambo","Niaje","Good morning","How are you","Weather today","Will it rain?","Fare?","Safe?","Thanks","Asante","Cool"
+-> {"role":"chat","reply":null}
+
+2. RIDE: Extract JSON. "now" IS VALID TIME. "Niko juja city mall nataka kuenda thika" -> from=Juja City Mall,to=Thika,date=today,time=null. "Denton to Irving now" -> from=Denton,to=Irving,time=now.
+
+3. COMMAND: "TAKE 1","TAKE_1","ONLINE","OFFLINE","FILTER Juja","CLEAR FILTERS","NEXT"
+
 Return ONLY JSON:
 {"role":"rider|driver|command|chat","command":"ONLINE|OFFLINE|SHOW_REQUESTS|TAKE|RATING|FILTER|CLEAR_FILTERS|NEXT|null","filter":string|null,"takeId":number|null,"from":string|null,"to":string|null,"date":"YYYY-MM-DD|today|tomorrow|null","time":"HH:MM|now|null","seats":number|null,"bags":number,"girls_only":bool,"pool_allowed":true,"rating":null,"reply":string|null}
+
+Rules: Single location "Juja" -> from="Juja". If message has "now"/"sai", ALWAYS set time="now".
 `;
 
 async function parseWithAI(msg, contextDraft={}) {
     var now = getNairobiNow();
     var tomorrow = new Date(now); tomorrow.setDate(now.getDate()+1);
-    var todayInfo = now.toLocaleDateString('en-US',{weekday:'long'})+" "+now.toISOString().split('T')[0]+" "+now.toTimeString();
-    var systemPrompt = SYSTEM_PROMPT.replaceAll("{TODAY_INFO}",todayInfo).replaceAll("{TODAY_DATE}",now.toISOString().split('T')[0]).replaceAll("{TOMORROW_DATE}",tomorrow.toISOString().split('T')[0]).replaceAll("{CONTEXT_DRAFT}",JSON.stringify(contextDraft));
+    var todayInfo = now.toLocaleDateString('en-US',{weekday:'long'})+" "+now.toISOString().split('T')[0]+" "+now.toLocaleTimeString('en-KE',{hour:'2-digit',minute:'2-digit'});
+    var greeting = getTimeGreeting();
+    var systemPrompt = SYSTEM_PROMPT.replaceAll("{TODAY_INFO}",todayInfo).replaceAll("{TODAY_DATE}",now.toISOString().split('T')[0]).replaceAll("{GREETING}",greeting).replaceAll("{TOMORROW_DATE}",tomorrow.toISOString().split('T')[0]).replaceAll("{CONTEXT_DRAFT}",JSON.stringify(contextDraft));
     var apiKey = process.env.GROQ_API_KEY;
     if (!apiKey) throw new Error("GROQ_API_KEY missing");
     var models = ["openai/gpt-oss-20b","openai/gpt-oss-120b","llama-3.3-70b-versatile"];
@@ -184,6 +234,32 @@ async function parseWithAI(msg, contextDraft={}) {
             console.warn(`Groq [${models[i]}] fail:`,err.response?.data?.error?.message||err.message);
             if (i===models.length-1) throw err;
         }
+    }
+}
+
+// ✅ NEW SMART CHAT WITH REAL-TIME GREETING + WEATHER ETC
+async function answerGeneralQuestion(question, userLocation="Juja") {
+    try {
+        const now = getNairobiNow();
+        const timeStr = now.toLocaleString('en-KE', { timeZone: 'Africa/Nairobi', weekday:'long', hour:'2-digit', minute:'2-digit' });
+        const greeting = getTimeGreeting();
+        const res = await axios.post("https://api.groq.com/openai/v1/chat/completions", {
+            model: "openai/gpt-oss-20b",
+            messages: [
+                { role: "system", content: `You are Rideschat Kenya, friendly Sheng assistant. Current: ${timeStr} EAT (${greeting}), user location: ${userLocation}.
+- Greeting: If user says Hi/Hey/Mambo: reply "${greeting}! Karibu Rideschat Kenya 🇰🇪" + brief help: "Just say 'Niko Juja nataka kuenda Thika sai'"
+- Weather: If asks weather: Say "Today in ${userLocation}/Nairobi area is usually sunny 22-26°C, may rain afternoon. Best carry umbrella. Need ride to avoid rain?" You cannot fetch live weather, advise check Google Weather for live.
+- Random chat: jokes, how are you, fare, safety: answer 2-3 lines friendly Sheng, then redirect: "Uko wapi? I can find you a ride."
+- Never say "I'm not sure what you mean". Always help.
+- Keep 2-4 lines max, use emojis sparingly.` },
+                { role: "user", content: question }
+            ],
+            temperature: 0.8
+        }, { headers: { "Authorization": `Bearer ${process.env.GROQ_API_KEY}` } });
+        return res.data.choices[0].message.content.trim();
+    } catch (e) {
+        console.error("chat fail", e.message);
+        return null;
     }
 }
 
@@ -226,7 +302,7 @@ async function handleRideLogic(phoneJid, text, realPhone) {
     try {
         const lowerText = text.toLowerCase().trim();
         const userPhoneKey = realPhone||phoneJid;
-        if (['okay','ok','cool','thanks','asante','👍'].includes(lowerText)) return;
+        if (['okay','ok','cool','thx'].includes(lowerText)) return;
 
         if (lowerText.startsWith('filter ')) {
             let filterLoc = text.substring(7).trim();
@@ -236,7 +312,7 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             if (nearby.length===0) {
                 await sendGupshupMessage(phoneJid,`✅ Filter: ${filterLoc}\nNo rides now.`);
             } else {
-                await sendGupshupMessage(phoneJid,`✅ Filter: ${filterLoc} | ${nearby.length} rides`);
+                await sendGupshupMessage(phoneJid,`✅ Filter: ${filterLoc} | ${nearby.length} rides - Tap to TAKE:`);
                 for (let r of nearby.slice(0,5)) { await sendRideButton(phoneJid,r); await new Promise(res=>setTimeout(res,400)); }
             }
             return;
@@ -252,11 +328,51 @@ async function handleRideLogic(phoneJid, text, realPhone) {
         const takeMatch = lowerText.match(/^take[_\s]*(\d+)$/i);
         var user = await User.getOrCreate(userPhoneKey);
         var session = getSession(userPhoneKey);
+
+        // ✅ FIX FOR "Now" / "9" BUG - Handle time-only replies BEFORE AI
+        if (session.draft.from && session.draft.to &&!session.draft.time) {
+            let quickTime = parseTimeQuick(lowerText);
+            if (quickTime) {
+                console.log(`Quick time: ${lowerText} -> ${quickTime}`);
+                session.draft.time = quickTime;
+                session.draft.date = getRealDate('today');
+                // Create ride directly
+                var rideReq = await RideRequest.createCustom(userPhoneKey, session.draft);
+                await sendGupshupMessage(phoneJid,`📝 RIDE #${rideReq.id} CREATED!\n📍 ${rideReq.from} → ${rideReq.to}\n⏰ ${toDisplayTime(rideReq.time)} Today\nAlerting drivers...`);
+                var drivers = await User.getOnlineNearby(rideReq.from);
+                var currentRiderClean = userPhoneKey.split('@')[0].replace(/[^0-9]/g,'');
+                var filteredDrivers = drivers.filter(d=>{var dc=(d.phone||'').split('@')[0].replace(/[^0-9]/g,''); return dc!==currentRiderClean;});
+                for (var j=0;j<filteredDrivers.length;j++) { await sendRideButton(filteredDrivers[j].phone, rideReq); }
+                clearSession(userPhoneKey); return;
+            }
+        }
+
+        // Handle single location as TO
+        if (session.draft.from &&!session.draft.to && lowerText.length >= 2 && lowerText.length <= 30 &&!lowerText.includes('need') &&!lowerText.includes('ride') &&!lowerText.includes('online')) {
+            if (!parseTimeQuick(lowerText) && lowerText!== 'hi' && lowerText!== 'hey' && lowerText!== 'sasa') {
+                session.draft.to = text.trim();
+                session.draft.role = 'rider';
+                await sendGupshupMessage(phoneJid,`⏰ WHAT TIME?\nReply: "Now" / "Sai" / "Kesho 9am" / "3 PM"`);
+                return;
+            }
+        }
+
         var ai = await parseWithAI(text, session.draft);
 
+        // ✅ SMART CHAT FOR RANDOM TEXTS + REAL-TIME GREETING
         if (ai.role==='chat') {
-            await sendGupshupMessage(phoneJid, ai.reply||`👋 ${toBoldSans("WELCOME TO RIDESCHAT KENYA!")}\nJust say: "Need ride from Juja to Thika at 3 PM"`);
-            return;
+            // If we are in middle of booking, don't treat as random chat
+            if (session.draft.from &&!session.draft.to) {
+                // Still waiting for TO, let it continue
+            } else {
+                const userLoc = user.location || session.draft.from || "Juja";
+                let smartReply = await answerGeneralQuestion(text, userLoc);
+                if (!smartReply) {
+                    smartReply = `${getTimeGreeting()}! Karibu Rideschat Kenya 🇰🇪\nJust say: 'Need ride FROM to TO at TIME'\nEg: 'Niko Juja nataka kuenda Thika sai'`;
+                }
+                await sendGupshupMessage(phoneJid, smartReply);
+                return;
+            }
         }
 
         let newFrom = ai.from||null; let newTo = ai.to||null;
@@ -280,20 +396,17 @@ async function handleRideLogic(phoneJid, text, realPhone) {
                 await user.setOnline(ai.from||session.draft.from||"Juja",2);
                 var nearby = await RideRequest.getNearby(user.location);
                 if (nearby.length===0) {
-                    await sendGupshupMessage(phoneJid,`🟢 ONLINE: ${user.location} | ⭐${user.rating.toFixed(1)}\nNo rides now. Stay ONLINE.`);
+                    await sendGupshupMessage(phoneJid,`🟢 ONLINE: ${user.location} | ⭐${user.rating.toFixed(1)}\nNo rides now. Stay ONLINE.\n${getTimeGreeting()}!`);
                 } else {
                     await sendGupshupMessage(phoneJid,`🟢 ONLINE: ${user.location} | ⭐${user.rating.toFixed(1)}\n🔥 ${nearby.length} RIDES - Tap button to TAKE:`);
-                    for (let r of nearby.slice(0,5)) {
-                        await sendRideButton(phoneJid,r);
-                        await new Promise(res=>setTimeout(res,400));
-                    }
+                    for (let r of nearby.slice(0,5)) { await sendRideButton(phoneJid,r); await new Promise(res=>setTimeout(res,400)); }
                     if (nearby.length>5) await sendGupshupMessage(phoneJid,`+ ${nearby.length-5} more. Type NEXT\nFilter: FILTER Thika | CLEAR FILTERS`);
                 }
             }
-            if (ai.command==='OFFLINE') { await user.setOffline(); await sendGupshupMessage(phoneJid,`🔴 OFFLINE`); }
+            if (ai.command==='OFFLINE') { await user.setOffline(); await sendGupshupMessage(phoneJid,`🔴 OFFLINE - ${getTimeGreeting()}!`); }
             if (ai.command==='SHOW_REQUESTS') {
                 var nearby2 = await RideRequest.getNearby("Juja");
-                if (nearby2.length===0) await sendGupshupMessage(phoneJid,"No rides in Juja");
+                if (nearby2.length===0) await sendGupshupMessage(phoneJid,`No rides in Juja - ${getTimeGreeting()}!`);
                 else {
                     await sendGupshupMessage(phoneJid,`📋 ${nearby2.length} RIDES IN JUJA:`);
                     for (let r of nearby2.slice(0,5)) { await sendRideButton(phoneJid,r); await new Promise(res=>setTimeout(res,400)); }
@@ -317,8 +430,8 @@ async function handleRideLogic(phoneJid, text, realPhone) {
         }
 
         if (session.draft.role==='rider' && (!session.draft.from||!session.draft.to)) {
-            if (!session.draft.from) await sendGupshupMessage(phoneJid,`📍 WHERE FROM? Eg: "Juja"`);
-            else await sendGupshupMessage(phoneJid,`📍 WHERE TO? You are in *${session.draft.from}*, where to? Eg: "Thika"`);
+            if (!session.draft.from) await sendGupshupMessage(phoneJid,`📍 WHERE FROM?\nEg: "Juja"`);
+            else await sendGupshupMessage(phoneJid,`📍 WHERE TO?\nYou are in *${session.draft.from}*, where to? Eg: "Thika"`);
             return;
         }
         if (session.draft.role==='rider' &&!session.draft.time) {
@@ -327,15 +440,13 @@ async function handleRideLogic(phoneJid, text, realPhone) {
         }
 
         if (session.draft.role==='rider') {
-            var rideReq = await RideRequest.createCustom(userPhoneKey, session.draft);
-            var timeStrReq = toDisplayTime(rideReq.time);
-            await sendGupshupMessage(phoneJid,`📝 RIDE #${rideReq.id} CREATED!\n📍 ${rideReq.from} → ${rideReq.to}\n⏰ ${timeStrReq} Today\nAlerting drivers...`);
-            var drivers = await User.getOnlineNearby(rideReq.from);
-            var currentRiderClean = userPhoneKey.split('@')[0].replace(/[^0-9]/g,'');
-            var filteredDrivers = drivers.filter(d=>{var dc=(d.phone||'').split('@')[0].replace(/[^0-9]/g,''); return dc!==currentRiderClean;});
-            for (var j=0;j<filteredDrivers.length;j++) {
-                await sendRideButton(filteredDrivers[j].phone, rideReq);
-            }
+            var rideReq2 = await RideRequest.createCustom(userPhoneKey, session.draft);
+            var timeStrReq = toDisplayTime(rideReq2.time);
+            await sendGupshupMessage(phoneJid,`📝 RIDE #${rideReq2.id} CREATED!\n📍 ${rideReq2.from} → ${rideReq2.to}\n⏰ ${timeStrReq} Today\nAlerting drivers...`);
+            var drivers2 = await User.getOnlineNearby(rideReq2.from);
+            var currentRiderClean2 = userPhoneKey.split('@')[0].replace(/[^0-9]/g,'');
+            var filteredDrivers2 = drivers2.filter(d=>{var dc=(d.phone||'').split('@')[0].replace(/[^0-9]/g,''); return dc!==currentRiderClean2;});
+            for (var j=0;j<filteredDrivers2.length;j++) { await sendRideButton(filteredDrivers2[j].phone, rideReq2); }
             clearSession(userPhoneKey); return;
         }
     } catch(err){ console.error('Error:',err.stack||err.message); }
