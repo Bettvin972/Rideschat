@@ -88,7 +88,8 @@ function parseTimeQuick(input) {
 }
 function isSimpleLocation(txt) {
     const t = txt.toLowerCase().trim();
-    const block = ['hi','hey','hello','sasa','mambo','niaje','need','ride','offer','driver','car','online','offline','filter','clear','next','now','sai','kesho','today','thanks','asante','ok','okay','need offer','offer ride','need to offer','i need','available','requests','show','all','see','my','trip','accept','take','end ride'];
+    // FIXED: added yes, yeah, yep, etc
+    const block = ['hi','hey','hello','sasa','mambo','niaje','need','ride','offer','driver','car','online','offline','filter','clear','next','now','sai','kesho','today','thanks','asante','ok','okay','yes','yeah','yep','yebo','sawa','poa','asante','cool','thx','thanks','need offer','offer ride','need to offer','i need','available','requests','show','all','see','my','trip','accept','take','end ride'];
     if (block.some(b => t===b || t.startsWith(b+' '))) return false;
     if (t.length < 3 || t.length > 25) return false;
     if (/^\d+$/.test(t)) return false;
@@ -180,7 +181,6 @@ async function sendRidesList(toJid, rides, title="RIDES:") {
     await sendGupshupMessage(toJid, `${title}\n${list}\n\nReply ${firstId} or TAKE ${firstId} to accept`);
 }
 
-// FIXED: No DB auto-resurrect, only memory
 async function checkAndForwardChat(phoneJid, text, realPhone) {
     const userPhoneKey = realPhone || phoneJid;
     let chat = activeChats[userPhoneKey];
@@ -217,22 +217,27 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             return;
         }
 
-        // 2. IGNORE emojis / ok
-        if (lowerText.includes('👍') || lowerText.includes('❤️') || lowerText.includes('😍') || lowerText==='okay' || lowerText==='ok') {
-            if (lowerText.length < 10) return;
+        // 2. IGNORE short acks that are not in chat
+        if (!activeChats[userPhoneKey]) {
+            if (lowerText.includes('👍') || lowerText.includes('❤️') || lowerText.includes('😍')) return;
+            if (['okay','ok','cool','thx','thanks','asante','yes','yeah'].includes(lowerText) && lowerText.length < 6) return;
         }
 
-        // 3. NEW SESSION - kill old chat BEFORE anything else
+        // 3. NEW SESSION commands - kill old chat
         const isNewStart = lowerText==='offline' || lowerText.startsWith('offline') || lowerText==='online' || lowerText.startsWith('online') || lowerText==='need a ride' || lowerText==='need ride' || lowerText.startsWith('need a ride') || lowerText.startsWith('filter ') || lowerText.includes('clear filter');
         if (isNewStart) {
             killChatFor(userPhoneKey);
             if (lowerText.includes('need a ride') || lowerText==='need ride') clearSession(userPhoneKey);
         }
 
-        // 4. LOCATION - THIS FIXES YOUR BUG: Machakos/Embu must kill chat and NOT forward
+        // 4. FIXED: IF IN ACTIVE CHAT, FORWARD FIRST - BEFORE LOCATION CHECK
+        // This fixes your screenshot: Yes -> Sent to rider, not "Okay from Yes where to?"
+        if (activeChats[userPhoneKey]) {
+            if (await checkAndForwardChat(phoneJid, text, realPhone)) return;
+        }
+
+        // 5. LOCATION - only for users NOT in active chat
         if (isSimpleLocation(text)) {
-            killChatFor(userPhoneKey); // KILL zombie Rider #2
-            // now handle as FROM/TO
             var user = await User.getOrCreate(userPhoneKey);
             var session = getSession(userPhoneKey);
             if (!session.draft.from) {
@@ -245,11 +250,6 @@ async function handleRideLogic(phoneJid, text, realPhone) {
                 await sendGupshupMessage(phoneJid, `Got it, ${session.draft.from} → ${session.draft.to}. What time? Reply Now or 9 AM`);
                 return;
             }
-        }
-
-        // 5. ONLY NOW try chat bridge (locations already handled above)
-        if (!isNewStart &&!isSimpleLocation(text)) {
-            if (await checkAndForwardChat(phoneJid, text, realPhone)) return;
         }
 
         // 6. Single number TAKE
