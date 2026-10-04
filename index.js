@@ -172,52 +172,61 @@ function cleanContactNumber(jid) {
     return cleanNum ? `https://wa.me/${cleanNum}` : "📱 *Direct Connection via Bot*";
 }
 
-var AI_PROMPT = `You are Rideschat Kenya assistant. Current: {TODAY_INFO} [{TODAY_DATE}]. 
-Previous context draft state: {CONTEXT_DRAFT}
+var SYSTEM_PROMPT = `You are Rideschat Kenya assistant. Current: {TODAY_INFO} [{TODAY_DATE}]. 
 
 Extract ride intent from user message and merge with context state.
-Return strictly JSON: 
+Return strictly valid JSON with this format: 
 {"role":"rider|driver|command|chat","command":"ONLINE|OFFLINE|SHOW_REQUESTS|TAKE|RATING|null","takeId":number|null,"from":"string or null","to":"string or null","date":"YYYY-MM-DD or null","time":"HH:MM or string or null","seats":number|null,"bags":number,"girls_only":bool,"pool_allowed":bool,"rating":number|null,"reply":"string or null"} 
 
 RULES: 
 1. If text is like "TAKE 7", "TAKE 1" -> role MUST be "command", command MUST be "TAKE", takeId MUST be number. 
 2. If user mentions "now", "immediately", or a time like "3:30 PM", extract it into "time".
-3. Preserve existing non-null fields from CONTEXT_DRAFT unless user updates them.
-Message: "{MSG}"`;
+3. Preserve existing non-null fields from CONTEXT_DRAFT unless user updates them.`;
 
 async function parseWithAI(msg, contextDraft = {}) {
     var now = new Date();
     var tomorrow = new Date();
     tomorrow.setDate(now.getDate() + 1);
     var todayInfo = now.toLocaleDateString('en-US', { weekday: 'long' }) + " " + now.toISOString().split('T')[0];
-    var prompt = AI_PROMPT.replaceAll("{TODAY_INFO}", todayInfo)
-                           .replaceAll("{TODAY_DATE}", now.toISOString().split('T')[0])
-                           .replaceAll("{TOMORROW_DATE}", tomorrow.toISOString().split('T')[0])
-                           .replace("{CONTEXT_DRAFT}", JSON.stringify(contextDraft))
-                           .replace("{MSG}", msg);
+    
+    var systemPrompt = SYSTEM_PROMPT.replaceAll("{TODAY_INFO}", todayInfo)
+                                   .replaceAll("{TODAY_DATE}", now.toISOString().split('T')[0])
+                                   .replaceAll("{TOMORROW_DATE}", tomorrow.toISOString().split('T')[0]);
 
-    var apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) throw new Error("GEMINI_API_KEY missing");
+    var userPrompt = `Previous context draft state: ${JSON.stringify(contextDraft)}\nMessage: "${msg}"`;
 
-    var models = ["gemini-3.8-flash", "gemini-3.5-flash-lite"];
+    var apiKey = process.env.GROQ_API_KEY;
+    if (!apiKey) throw new Error("GROQ_API_KEY missing in .env");
+
+    var models = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"];
 
     for (var i = 0; i < models.length; i++) {
         try {
-            var url = "https://generativelanguage.googleapis.com/v1beta/models/" + models[i] + ":generateContent?key=" + apiKey;
-            var res = await axios.post(url, {
-                contents: [{ parts: [{ text: prompt }] }],
-                generationConfig: {
+            var res = await axios.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                {
+                    model: models[i],
+                    messages: [
+                        { role: "system", content: systemPrompt },
+                        { role: "user", content: userPrompt }
+                    ],
                     temperature: 0.1,
-                    responseMimeType: "application/json"
+                    response_format: { type: "json_object" }
+                },
+                {
+                    headers: {
+                        "Authorization": `Bearer ${apiKey}`,
+                        "Content-Type": "application/json"
+                    }
                 }
-            });
+            );
 
-            var cleanContent = res.data.candidates[0].content.parts[0].text.trim();
+            var cleanContent = res.data.choices[0].message.content.trim();
             var data = JSON.parse(cleanContent);
             if (data.date) data.date = getRealDate(data.date);
             return data;
         } catch (err) {
-            console.error(`Gemini API [${models[i]}] Error:`, err.response ? err.response.data : err.message);
+            console.error(`Groq API [${models[i]}] Error:`, err.response ? err.response.data : err.message);
             if (i === models.length - 1) throw err;
         }
     }
