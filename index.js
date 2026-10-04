@@ -355,7 +355,7 @@ async function checkAndForwardChat(phoneJid, text, realPhone) {
     let chat = activeChats[userPhoneKey] || activeChats[normalizePhone(userPhoneKey)];
     if (!chat) return false;
     try {
-        let ride = await RideRequest.findById(chat.rideId);
+        let ride = await RideRequest.findByPk(chat.rideId);
         if (!ride || ride.status !== 'TAKEN') { 
             killChatFor(userPhoneKey); 
             return false; 
@@ -526,7 +526,7 @@ async function handleRideLogic(phoneJid, text, realPhone) {
         if (/^\d+$/.test(lowerText) || lowerText.startsWith('take ')) {
             let rideId = parseInt(lowerText.replace(/[^0-9]/g, ''), 10);
             if (rideId) {
-                let ride = await RideRequest.findById(rideId);
+                let ride = await RideRequest.findByPk(rideId);
                 if (!ride) { await sendGupshupMessage(phoneJid, `Ride ${rideId} not found. Try ONLINE`); return; }
                 if (normalizePhone(ride.phone) === normKey) { await sendGupshupMessage(phoneJid, `You can't take your own ride ${rideId}`); return; }
                 if (ride.status === 'OPEN') {
@@ -539,7 +539,7 @@ async function handleRideLogic(phoneJid, text, realPhone) {
                     let driver = await User.getOrCreate(userPhoneKey);
                     
                     await sendGupshupMessage(phoneJid, `MATCHED ${ride.id} ${ride.from} -> ${ride.to} ${toDisplayTime(ride.time)}\nRider: ${getDirectChatLink(ride.phone)} | Rating: ${(rider.rating||5).toFixed(1)} (${rider.ratingCount||0})\nYour rating: ${(driver.rating||5).toFixed(1)} (${driver.ratingCount||0})\nEND RIDE when done`);
-                    await sendGupshupMessage(ride.phone, `DRIVER FOUND ${ride.id} ${ride.from} -> ${ride.to}\nDriver: ${getDirectChatLink(userPhoneKey)} | Rating: ${(driver.rating||5).toFixed(1)} (${driver.ratingCount||0})\nYour rating: ${(rider.rating||5).toFixed(1)} (${rider.ratingCount||0})`);
+                    await sendGupshupMessage(ride.phone, `DRIVER FOUND ${ride.id} ${ride.from} -> ${ride.to}\nDriver: ${getDirectChatLink(userPhoneKey)} | Rating: ${(driver.rating||5).toFixed(1)} (${driver.ratingCount||0})\nYour rating: ${(driver.rating||5).toFixed(1)} (${driver.ratingCount||0})`);
                     return;
                 } else { await sendGupshupMessage(phoneJid, `Ride ${rideId} already taken`); return; }
             }
