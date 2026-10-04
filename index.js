@@ -11,144 +11,299 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-sequelize.sync({ alter: true }).then(() => console.log("DB Synced")).catch(e => console.error("DB Sync error:", e.message));
+sequelize.sync({ alter: true }).then(() => { console.log("DB Synced"); }).catch(e => { console.error("DB Sync error:", e.message); });
 
 let sock = null;
 let qrLast = null;
 const AUTH_PATH = path.join(__dirname, 'auth_info');
-const userSessions = {};
 
+const userSessions = {};
 function getSession(phone) {
-  if (!userSessions[phone]) userSessions[phone] = { draft: {}, lastUpdated: Date.now() };
-  return userSessions[phone];
+    if (!userSessions[phone]) userSessions[phone] = { draft: {}, lastUpdated: Date.now() };
+    return userSessions[phone];
 }
 function clearSession(phone) { delete userSessions[phone]; }
 
-function getRealDate(aiDate) {
-  if (!aiDate) return null;
-  const lower = aiDate.toLowerCase();
-  const today = new Date();
-  if (lower === 'today') return today.toISOString().split('T')[0];
-  if (lower === 'tomorrow') { let d = new Date(); d.setDate(today.getDate()+1); return d.toISOString().split('T')[0]; }
-  return aiDate; // already YYYY-MM-DD
-}
-
-// --- PROMPT ---
-const AI_PROMPT = `
-You are Rideschat parser. Today is {TODAY_INFO} (YYYY-MM-DD is {TODAY_DATE}).
-Extract ride info from message: "{MSG}"
-
-Return ONLY JSON:
-{
-  "role": "rider" or "driver" or "command" or "chat",
-  "command": "TAKE" or "ONLINE" or "OFFLINE" or null,
-  "takeId": number or null,
-  "from": string or null,
-  "to": string or null,
-  "date": "YYYY-MM-DD" or "today" or "tomorrow" or null,
-  "time": "HH:mm" 24h or null,
-  "seats": number or null,
-  "bags": number,
-  "girls_only": boolean,
-  "pool_allowed": boolean,
-  "rating": number or null,
-  "reply": string or null for chat
-}
-Rules:
-- "Need ride Juja to Thika tomorrow 5pm" -> from Juja, to Thika, date tomorrow, time 17:00
-- "TAKE 1" -> command TAKE, takeId 1
-- "Driver ON 4 seats Juja" -> command ONLINE, seats 4, from Juja
-`;
-
-// --- FIXED AI PARSER (GROQ ONLY) ---
-async function parseWithAI(msg) {
-  const lower = msg.toLowerCase().trim();
-
-  // 1. OFFLINE FAST PATH - no API cost
-  const takeMatch = lower.match(/^take\s*(\d+)/);
-  if (takeMatch) return { role: "command", command: "TAKE", takeId: parseInt(takeMatch[1]), from: null, to: null, date: null, time: null, seats: null, bags: 0, girls_only: false, pool_allowed: true, rating: null, reply: null };
-  if (lower === "on" || lower.includes("driver on") || lower.includes("online")) return { role: "command", command: "ONLINE", from: "Juja", to: null, date: null, time: null, seats: 4, bags: 0, girls_only: false, pool_allowed: true, rating: null, reply: null };
-  if (lower === "off" || lower.includes("driver off") || lower.includes("offline")) return { role: "command", command: "OFFLINE", from: null, to: null, date: null, time: null, seats: null, bags: 0, girls_only: false, pool_allowed: true, rating: null, reply: null };
-
-  // 2. GROQ CALL - current live model
-  const now = new Date();
-  const todayInfo = now.toLocaleDateString('en-US', { weekday: 'long' }) + " " + now.toISOString().split('T')[0];
-  const prompt = AI_PROMPT.replaceAll("{TODAY_INFO}", todayInfo).replaceAll("{TODAY_DATE}", now.toISOString().split('T')[0]).replace("{MSG}", msg);
-
-  try {
-    if (!process.env.GROQ_API_KEY) throw new Error("Missing GROQ_API_KEY in Render env");
-
-    const res = await axios.post("https://api.groq.com/openai/v1/chat/completions", {
-      model: "openai/gpt-oss-20b", // <-- CURRENT MODEL, NOT llama
-      messages: [{ role: "user", content: prompt }],
-      response_format: { type: "json_object" },
-      temperature: 0.1
-    }, {
-      headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` }
-    });
-
-    let data = JSON.parse(res.data.choices[0].message.content);
-    if (data.date) data.date = getRealDate(data.date);
-    console.log("Groq OK [" + "openai/gpt-oss-20b" + "]:", data);
-    return data;
-
-  } catch (e) {
-    const errDetail = e.response?.data?.error?.message || e.message;
-    console.error("Groq Error:", errDetail);
-    // fallback to simple regex extract
-    const fromTo = lower.match(/(?:from\s+)?(\w+)\s+to\s+(\w+)/);
-    return {
-      role: "rider",
-      from: fromTo? fromTo[1] : null,
-      to: fromTo? fromTo[2] : null,
-      date: lower.includes("tomorrow")? getRealDate("tomorrow") : getRealDate("today"),
-      time: null, seats: null, bags: 0, girls_only: false, pool_allowed: true, rating: null, reply: null
+function toBoldSans(text) {
+    const sansBoldMap = {
+        'A':'𝗔','B':'𝗕','C':'𝗖','D':'𝗗','E':'𝗘','F':'𝗙','G':'𝗚','H':'𝗛','I':'𝗜','J':'𝗝','K':'𝗞','L':'𝗟','M':'𝗠',
+        'N':'𝗡','O':'𝗢','P':'𝗣','Q':'𝗤','R':'𝗥','S':'𝗦','T':'𝗧','U':'𝗨','V':'𝗩','W':'𝗪','X':'𝗫','Y':'𝗬','Z':'𝗭',
+        'a':'𝗮','b':'𝗯','c':'𝗰','d':'𝗱','e':'𝗲','f':'𝗳','g':'𝗴','h':'𝗵','i':'𝗶','j':'𝗷','k':'𝗸','l':'𝗹','m':'𝗺',
+        'n':'𝗻','o':'𝗼','p':'𝗽','q':'𝑞','r':'𝗿','s':'𝘀','t':'𝘁','u':'𝘂','v':'𝘃','w':'𝘄','x':'𝘅','y':'𝘆','z':'𝘇',
+        '0':'𝟬','1':'𝟭','2':'𝟮','3':'𝟯','4':'𝟰','5':'𝟱','6':'𝟲','7':'𝟩','8':'𝟴','9':'𝟡'
     };
-  }
+    return text.split('').map(char => sansBoldMap[char] || char).join('');
 }
 
-// --- WHATSAPP LOGIC (keep your existing below) ---
-//... (leave your startSock, handleMessage, app.get etc as is, just replace parseWithAI)
+async function startWhatsApp() {
+    if (!fs.existsSync(AUTH_PATH)) fs.mkdirSync(AUTH_PATH, { recursive: true });
+    const { state, saveCreds } = await useMultiFileAuthState(AUTH_PATH);
+    const { version, isLatest } = await fetchLatestBaileysVersion();
+    console.log(`Starting WA with version v${version.join('.')} (isLatest: ${isLatest})...`);
+    sock = makeWASocket({
+        version, auth: state, logger: pino({ level: 'silent' }),
+        printQRInTerminal: false, browser: ["Rideschat", "Chrome", "1.0.0"],
+        shouldSyncHistoryMessage: () => false, syncFullHistory: false, markOnlineOnConnect: false,
+        getMessage: async () => undefined
+    });
+    sock.ev.on('creds.update', saveCreds);
+    sock.ev.on('connection.update', async (update) => {
+        const { connection, lastDisconnect, qr } = update;
+        if (qr) { qrLast = qr; console.log("NEW QR READY - Go to /qr"); }
+        if (connection === 'open') { console.log('WhatsApp Connected!'); qrLast = null; }
+        if (connection === 'close') {
+            const statusCode = lastDisconnect?.error?.output?.statusCode;
+            const msg = lastDisconnect?.error?.message || '';
+            console.log(`Closed, code: ${statusCode} msg: ${msg}`);
+            qrLast = null; sock = null;
+            if (statusCode === DisconnectReason.loggedOut || statusCode === 401) {
+                if (fs.existsSync(AUTH_PATH)) fs.rmSync(AUTH_PATH, { recursive: true, force: true });
+            }
+            setTimeout(startWhatsApp, 5000);
+        }
+    });
+    sock.ev.on('messages.upsert', async ({ messages }) => {
+        try {
+            if (!messages ||!messages[0]) return;
+            const msg = messages[0];
+            if (!msg.message) return;
+            if (msg.key.fromMe) return;
+            const remoteJid = msg.key.remoteJid || "";
+            if (remoteJid === 'status@broadcast' || remoteJid.includes('@g.us')) return;
+            if (msg.message.protocolMessage) return;
+            const text = msg.message.conversation || msg.message.extendedTextMessage?.text || msg.message.imageMessage?.caption || "";
+            if (!text) return;
+            let realPhone = remoteJid;
+            if (remoteJid.includes('@lid')) {
+                if (msg.key.participant &&!msg.key.participant.includes('@lid')) realPhone = msg.key.participant;
+                else if (msg.key.remoteJidAlt &&!msg.key.remoteJidAlt.includes('@lid')) realPhone = msg.key.remoteJidAlt;
+            }
+            console.log(`MSG [${remoteJid}] (Extracted: ${realPhone}): ${text}`);
+            await handleRideLogic(remoteJid, text, realPhone);
+        } catch (e) {
+            const m = e.message || "";
+            if (m.includes('Bad MAC') || m.includes('SessionError') || m.includes('No matching')) return;
+            console.error('upsert error:', m);
+        }
+    });
+}
+startWhatsApp();
 
-async function startSock() {
-  const { state, saveCreds } = await useMultiFileAuthState(AUTH_PATH);
-  const { version } = await fetchLatestBaileysVersion();
-  sock = makeWASocket({ version, auth: state, logger: pino({ level: 'silent' }), printQRInTerminal: false });
-  sock.ev.on('creds.update', saveCreds);
-  sock.ev.on('connection.update', async (update) => {
-    const { connection, lastDisconnect, qr } = update;
-    if (qr) { qrLast = qr; console.log("New QR generated"); }
-    if (connection === 'close') {
-      const shouldReconnect = (lastDisconnect?.error?.output?.statusCode!== DisconnectReason.loggedOut);
-      if (shouldReconnect) startSock();
-    } else if (connection === 'open') { console.log("WhatsApp Connected"); }
-  });
+process.on('uncaughtException', (err) => { if (err.message && (err.message.includes('Bad MAC') || err.message.includes('SessionError'))) return; console.error('Uncaught:', err.message); });
+process.on('unhandledRejection', (reason) => { const msg = reason?.message || String(reason); if (msg.includes('Bad MAC') || msg.includes('SessionError') || msg.includes('No matching')) return; console.error('Unhandled:', msg); });
 
-  sock.ev.on('messages.upsert', async ({ messages }) => {
-    for (const m of messages) {
-      if (!m.message || m.key.fromMe) continue;
-      const phone = m.key.remoteJid;
-      const text = m.message.conversation || m.message.extendedTextMessage?.text || "";
-      if (!text) continue;
-      console.log("Incoming:", phone, text);
-      try {
-        const parsed = await parseWithAI(text);
-        console.log("Merged Draft:", parsed);
-        // TODO: your existing logic to save to DB and reply
-        if (sock) await sock.sendMessage(phone, { text: `Parsed: ${JSON.stringify(parsed)}` });
-      } catch (err) { console.error("Handle error", err); }
+function getRealDate(aiDate) {
+    const now = new Date();
+    if (!aiDate || aiDate.toLowerCase() === 'today' || aiDate.toLowerCase() === 'now' || aiDate === 'null') return now.toISOString().split('T')[0];
+    if (aiDate.toLowerCase() === 'tomorrow') { var t = new Date(); t.setDate(now.getDate() + 1); return t.toISOString().split('T')[0]; }
+    var days = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+    if (days.includes(aiDate.toLowerCase())) {
+        var target = days.indexOf(aiDate.toLowerCase());
+        var diff = (target - now.getDay() + 7) % 7; if (diff === 0) diff = 7;
+        var d = new Date(); d.setDate(now.getDate() + diff); return d.toISOString().split('T')[0];
     }
-  });
+    return aiDate;
 }
-startSock();
+function cleanContactNumber(jid) {
+    if (!jid) return "📱 _Contact via Bot_";
+    if (jid.includes('@lid')) return "📱 *Direct Connection via Bot*";
+    const cleanNum = jid.split('@')[0].replace(/[^0-9]/g, '');
+    return cleanNum? `https://wa.me/${cleanNum}` : "📱 *Direct Connection via Bot*";
+}
 
-app.get('/', (req, res) => res.send(`Rideschat running. QR: ${qrLast? 'ready' : 'not ready'}`));
-app.get('/qr', async (req, res) => {
-  if (!qrLast) return res.send("No QR - already connected");
-  const QRCode = require('qrcode');
-  const qrImg = await QRCode.toDataURL(qrLast);
-  res.send(`<img src="${qrImg}"><p>Scan with WhatsApp</p>`);
+var SYSTEM_PROMPT = `You are Rideschat Kenya assistant. Current: {TODAY_INFO} [{TODAY_DATE}].
+Extract ride intent from user message and merge with context state.
+Return strictly valid JSON with this format:
+{"role":"rider|driver|command|chat","command":"ONLINE|OFFLINE|SHOW_REQUESTS|TAKE|RATING|null","takeId":number|null,"from":"string or null","to":"string or null","date":"YYYY-MM-DD or null","time":"HH:MM or string or null","seats":number|null,"bags":number,"girls_only":bool,"pool_allowed":bool,"rating":number|null,"reply":"string or null"}
+RULES:
+1. If text is like "TAKE 7", "TAKE 1" -> role MUST be "command", command MUST be "TAKE", takeId MUST be number.
+2. If user mentions "now", "immediately", or a time like "3:30 PM", extract it into "time".
+3. Preserve existing non-null fields from CONTEXT_DRAFT unless user updates them.
+4. If role is "chat", provide a friendly, concise greeting in "reply" explaining how to request or offer a ride.`;
+
+async function parseWithAI(msg, contextDraft = {}) {
+    var now = new Date();
+    var tomorrow = new Date(); tomorrow.setDate(now.getDate() + 1);
+    var todayInfo = now.toLocaleDateString('en-US', { weekday: 'long' }) + " " + now.toISOString().split('T')[0];
+    var systemPrompt = SYSTEM_PROMPT.replaceAll("{TODAY_INFO}", todayInfo).replaceAll("{TODAY_DATE}", now.toISOString().split('T')[0]).replaceAll("{TOMORROW_DATE}", tomorrow.toISOString().split('T')[0]);
+    var userPrompt = `Previous context draft state: ${JSON.stringify(contextDraft)}\nMessage: "${msg}"`;
+    var apiKey = process.env.GROQ_API_KEY;
+    if (!apiKey) throw new Error("GROQ_API_KEY missing in Render env - add it");
+
+    // ✅ FIXED - CURRENT LIVE MODELS AS OF OCT 2026 (old llama/mixtral deleted by Groq)
+    var models = [
+        "openai/gpt-oss-20b",
+        "openai/gpt-oss-120b",
+        "qwen/qwen3.6-27b"
+    ];
+
+    for (var i = 0; i < models.length; i++) {
+        try {
+            var res = await axios.post("https://api.groq.com/openai/v1/chat/completions",
+                {
+                    model: models[i],
+                    messages: [
+                        { role: "system", content: systemPrompt },
+                        { role: "user", content: userPrompt }
+                    ],
+                    temperature: 0.1,
+                    response_format: { type: "json_object" }
+                },
+                { headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" } }
+            );
+            var data = JSON.parse(res.data.choices[0].message.content.trim());
+            if (data.date) data.date = getRealDate(data.date);
+            console.log(`Groq OK [${models[i]}]:`, data);
+            return data;
+        } catch (err) {
+            var errMsg = err.response?.data?.error?.message || err.message;
+            console.warn(`Groq API [${models[i]}] Failed: ${errMsg}. Trying fallback...`);
+            if (i === models.length - 1) throw err;
+        }
+    }
+}
+
+async function sendGupshupMessage(toJid, messageText) {
+    if (!toJid ||!sock) return;
+    try {
+        let jid = toJid;
+        if (!jid.includes('@')) jid = jid.replace('+', '').trim() + '@s.whatsapp.net';
+        await sock.sendMessage(jid, { text: messageText });
+        console.log('Sent to ' + jid);
+    } catch (err) { console.error('Send error:', err.message); }
+}
+
+function formatRequests(reqs) {
+    if (!reqs || reqs.length === 0) return "```No active ride requests right now.```";
+    return reqs.map(function (r) {
+        var girls = r.girls_only? ' 🚺 *[GIRLS ONLY]*' : '';
+        var contact = cleanContactNumber(r.phone);
+        return `🆔 *TRIP #${r.id}*\n📍 *Route:* ${r.from} ➔ ${r.to}\n📅 *When:* \`${r.date || 'Today'}\` at \`${r.time || 'Flexible'}\`\n🧳 *Bags:* ${r.bags}${girls}\n👤 *Contact:* ${contact}\n\n👉 _Reply \`TAKE ${r.id}\` to accept_`;
+    }).join('\n\n═════════════════\n\n');
+}
+function formatOffers(offers) {
+    if (!offers || offers.length === 0) return "```No active driver offers right now.```";
+    return offers.map(function (o, i) {
+        var contact = cleanContactNumber(o.phone);
+        return `🚘 *OFFER #${i + 1}*\n📍 *Route:* ${o.from} ➔${o.to}\n📅 *When:* \`${o.date || 'Today'}\` at \`${o.time || 'Flexible'}\`\n💺 *Available:* ${o.seats} seat(s)\n💵 *Fare:* KES ${o.price} (${o.rating}⭐)\n👤 *Contact:* ${contact}`;
+    }).join('\n\n═════════════════\n\n');
+}
+
+async function handleRideLogic(phoneJid, text, realPhone) {
+    try {
+        const lowerText = text.toLowerCase().trim();
+        const userPhoneKey = realPhone || phoneJid;
+        const acknowledgements = ['okay', 'ok', 'cool', 'thanks', 'asante', 'got it', 'sure', 'alright', 'thx', '👍'];
+        if (acknowledgements.includes(lowerText)) return;
+        const takeMatch = lowerText.match(/^take\s*(\d+)$/i);
+        var user = await User.getOrCreate(userPhoneKey);
+        var session = getSession(userPhoneKey);
+        var ai = await parseWithAI(text, session.draft);
+        if (ai.role === 'chat') {
+            const defaultReply = ai.reply || `👋 ${toBoldSans("WELCOME TO RIDESCHAT KENYA!")}\n\nTo find or offer a ride, tell me your route and time.\n\nExample: \`Need ride from Juja to Thika at 3 PM\``;
+            await sendGupshupMessage(phoneJid, defaultReply);
+            return;
+        }
+        session.draft = {
+            role: ai.role || session.draft.role || 'rider',
+            from: ai.from || session.draft.from || null,
+            to: ai.to || session.draft.to || null,
+            date: ai.date || session.draft.date || null,
+            time: ai.time || session.draft.time || null,
+            bags: ai.bags?? session.draft.bags?? 0,
+            girls_only: ai.girls_only?? session.draft.girls_only?? false
+        };
+        if (takeMatch) { ai.role = 'command'; ai.command = 'TAKE'; ai.takeId = parseInt(takeMatch[1], 10); }
+        console.log("[" + phoneJid + "] -> Merged Draft: " + JSON.stringify(session.draft));
+        if (ai.role === 'command') {
+            if (ai.command === 'ONLINE') {
+                await user.setOnline(ai.from || "Juja", 2);
+                var nearby = await RideRequest.getNearby(user.location);
+                await sendGupshupMessage(phoneJid, `🟢 ${toBoldSans("DRIVER STATUS: ONLINE")}\n📍 *Location:* Near ${user.location}\n⭐ *Rating:*${user.rating.toFixed(1)} / 5.0\n\n${toBoldSans("AVAILABLE RIDES NEAR YOU:")}\n\n${formatRequests(nearby)}`);
+            }
+            if (ai.command === 'OFFLINE') {
+                await user.setOffline();
+                await sendGupshupMessage(phoneJid, `🔴 ${toBoldSans("DRIVER STATUS: OFFLINE")}\nYou will no longer receive trip notifications.`);
+            }
+            if (ai.command === 'SHOW_REQUESTS') {
+                var nearby2 = await RideRequest.getNearby("Juja");
+                await sendGupshupMessage(phoneJid, `📋 ${toBoldSans("AVAILABLE RIDES NEAR JUJA:")}\n\n${formatRequests(nearby2)}`);
+            }
+            if (ai.command === 'TAKE') {
+                var ride = await RideRequest.findById(ai.takeId);
+                if (ride && ride.status === 'PENDING') {
+                    await ride.updateStatus("TAKEN");
+                    const riderContactStr = cleanContactNumber(ride.phone);
+                    const driverContactStr = cleanContactNumber(userPhoneKey);
+                    var timeStr = ride.time? ride.time : 'Flexible';
+                    await sendGupshupMessage(phoneJid, `🎉 ${toBoldSans("TRIP MATCHED SUCCESSFULLY!")}\n\n📍 *Route:* ${ride.from} ➔${ride.to}\n📅 *When:* \`${ride.date || 'Today'}\` at \`${timeStr}\`\n\n👤 *Rider Contact:* ${riderContactStr}\n\n_We have notified the rider with your details!_`);
+                    await sendGupshupMessage(ride.phone, `🚘 ${toBoldSans("DRIVER ASSIGNED TO YOUR RIDE!")}\n\nYour trip from *${ride.from}* to *${ride.to}* has been accepted.\n\n⭐ *Driver Rating:*${user.rating.toFixed(1)}\n📱 *Driver Contact:* ${driverContactStr}\n\n_Please contact your driver directly._`);
+                } else {
+                    await sendGupshupMessage(phoneJid, `❌ *Ride #${ai.takeId}* was not found or has already been taken.`);
+                }
+            }
+            if (ai.command === 'RATING') {
+                await user.addRating(ai.rating);
+                await sendGupshupMessage(phoneJid, `⭐ *Thank you!* You rated ${ai.rating} stars.`);
+            }
+            return;
+        }
+        if (session.draft.role === 'rider' && (!session.draft.from ||!session.draft.to)) {
+            await sendGupshupMessage(phoneJid, `📍 ${toBoldSans("WHERE ARE YOU TRAVELING?")}\n\nPlease specify both your origin and destination.\n\nExample: \`Need ride Juja to Thika\``);
+            return;
+        }
+        if (session.draft.role === 'rider' &&!session.draft.time) {
+            await sendGupshupMessage(phoneJid, `⏰ ${toBoldSans("WHAT TIME ARE YOU LEAVING?")}\n\nPlease include your preferred travel time.\n\nExample: \`Leaving at 3:30 PM\` or \`Now\``);
+            return;
+        }
+        if (session.draft.role === 'rider') {
+            var rideReq = await RideRequest.createCustom(userPhoneKey, session.draft);
+            var matches = await RideOffer.perfectMatch(rideReq);
+            var displayDate = rideReq.date || 'Today';
+            var timeStrReq = rideReq.time? rideReq.time : 'Flexible';
+            if (matches && matches.length > 0) {
+                await sendGupshupMessage(phoneJid, `✅ ${toBoldSans("FOUND AVAILABLE DRIVER(S)!")}\n\n${formatOffers(matches)}`);
+            } else {
+                await sendGupshupMessage(phoneJid, `📝 ${toBoldSans("RIDE REQUEST CREATED!")} *(ID: #${rideReq.id})*\n📍 *Route:* ${rideReq.from} ➔ ${rideReq.to}\n📅 *Date:* \`${displayDate}\` at \`${timeStrReq}\`\n\n_Alerting nearby drivers now..._`);
+                var drivers = await User.getOnlineNearby(rideReq.from);
+                var currentRiderClean = userPhoneKey.split('@')[0].replace(/[^0-9]/g, '');
+                var filteredDrivers = drivers.filter(d => { var driverClean = (d.phone || '').split('@')[0].replace(/[^0-9]/g, ''); return driverClean!== currentRiderClean; });
+                for (var j = 0; j < filteredDrivers.length; j++) {
+                    await sendGupshupMessage(filteredDrivers[j].phone, `🔔 ${toBoldSans("NEW RIDE REQUEST NEAR YOU!")}\n\n📍 *Route:* ${rideReq.from} ➔ ${rideReq.to}\n📅 *When:* \`${displayDate}\` at \`${timeStrReq}\`\n🧳 *Bags:* ${rideReq.bags}\n\n👉 Reply \`TAKE ${rideReq.id}\` to accept!`);
+                }
+            }
+            clearSession(userPhoneKey); return;
+        }
+        if (ai.role === 'driver') {
+            var offer = await RideOffer.createCustom(userPhoneKey, ai);
+            var riders = await RideRequest.getMatchingRiders(offer);
+            var displayOfferDate = offer.date || 'Today';
+            var offerTimeStr = offer.time? offer.time : 'Flexible';
+            if (riders.length > 0) {
+                await sendGupshupMessage(phoneJid, `🚘 ${toBoldSans("MATCHING RIDERS FOUND!")}\n\n${formatRequests(riders)}`);
+            } else {
+                await sendGupshupMessage(phoneJid, `🚘 ${toBoldSans("OFFER POSTED!")}\n📍 *Route:* ${offer.from} ➔ ${offer.to}\n📅 *Date:* \`${displayOfferDate}\` at \`${offerTimeStr}\`\n\n_We will alert you as soon as a passenger books._`);
+            }
+            clearSession(userPhoneKey);
+        }
+    } catch (err) { console.error('Error:', err.stack || err.message); }
+}
+
+setInterval(async () => {
+    try {
+        if (RideRequest.clearExpired && RideOffer.clearExpired) {
+            await RideRequest.clearExpired(); await RideOffer.clearExpired();
+        }
+    } catch (e) { console.error('[CRON CLEANUP ERROR]', e.message); }
+}, 15 * 60 * 1000);
+
+app.get('/qr', function (req, res) {
+    if (!qrLast) return res.send("<h1>Connected! Bot Live</h1>");
+    var qrImage = "https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=" + encodeURIComponent(qrLast);
+    res.send("<h1>Scan with your Safaricom line</h1><p>WhatsApp > Linked Devices > Link a Device</p><img src='" + qrImage + "'/><p>Refresh after 20 sec</p>");
 });
-
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log("Server running on " + PORT));
+app.post('/webhook', function (req, res) { res.send('OK'); });
+app.get('/ping', function (req, res) { res.send("Rideschat Kenya Alive"); });
+app.get('/', function (req, res) { res.send("Rideschat Kenya LIVE - Go to /qr"); });
+var PORT = process.env.PORT || 10000;
+app.listen(PORT, function () { console.log("Rideschat Kenya running on port " + PORT); });
