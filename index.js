@@ -18,7 +18,7 @@ let qrLast = null;
 const AUTH_PATH = path.join(__dirname, 'auth_info');
 const userSessions = {};
 const activeChats = {};
-const ratingSessions = {}; // SEPARATE - so clearall doesn't break ratings
+const ratingSessions = {};
 
 function getSession(phone) {
     if (!userSessions[phone]) userSessions[phone] = { draft: {}, lastUpdated: Date.now() };
@@ -149,31 +149,7 @@ function parseRating(txt) {
 }
 async function addRatingToUser(phone, newRating) {
     try {
-        let u = await User.getOrCreate(phone);
-        if (u.rating === null || u.rating === undefined) u.rating = 5;
-        if (u.ratingCount === null || u.ratingCount === undefined) u.ratingCount = 0;
-        // FIX: if first rating, don't multiply by old 5
-        let total = (u.ratingCount === 0)? newRating : (u.rating * u.ratingCount + newRating);
-        u.ratingCount = (u.ratingCount === 0)? 1 : u.ratingCount + 1;
-        if (u.ratingCount > 1 && total!== newRating) {
-            // already calculated above
-        } else if (u.ratingCount === 1) {
-            // first rating already set
-        }
-        if (u.ratingCount === 1) {
-            u.rating = newRating;
-        } else {
-            // recalc: we already have total from previous
-            let prevTotal = u.rating * (u.ratingCount -1);
-            // Actually simpler: use stored rating
-            // We will recompute correctly
-            let prevCount = u.ratingCount -1;
-            let prevRating = u.rating; // old avg before update - need to save before
-            // To avoid confusion, fetch fresh
-        }
-        // CLEAN RECALC
         let fresh = await User.getOrCreate(phone);
-        // Use proper formula
         let countBefore = fresh.ratingCount || 0;
         let avgBefore = fresh.rating || 5;
         if (countBefore === 0) {
@@ -190,7 +166,8 @@ async function addRatingToUser(phone, newRating) {
 }
 function isSimpleLocation(txt) {
     const t = txt.toLowerCase().trim();
-    const exactBlock = ['hi','hey','hello','need','ride','offer','driver','car','online','offline','filter','clear','next','now','today','tomorrow','thanks','thank','thank you','ok','okay','yes','yeah','yep','cool','thx','available','requests','show','all','see','my','trip','accept','take','end ride','who are you','what are you','help','what can you do','how does it work','what is','who is','where is','how can','how to','rate','rating','need a ride','need ride','i need a ride'];
+    if (t.includes('offer') || t.includes('driver') || t.includes('need to offer') || t.includes('offering')) return false;
+    const exactBlock = ['hi','hey','hello','need','ride','offer','driver','car','online','offline','filter','clear','next','now','today','tomorrow','thanks','thank','thank you','ok','okay','yes','yeah','yep','cool','thx','available','requests','show','all','see','my','trip','accept','take','end ride','who are you','what are you','help','what can you do','how does it work','what is','who is','where is','how can','how to','rate','rating','need a ride','need ride','i need a ride','need to offer ride','i need to offer ride'];
     if (exactBlock.includes(t)) return false;
     if (t.includes('how can i') || t.includes('need a ride to') || t.length > 35) return false;
     if (t.length < 3 || t.length > 35) return false;
@@ -265,11 +242,10 @@ async function startWhatsApp() {
 startWhatsApp();
 var SYSTEM_PROMPT = `You are Bett, a student ride-sharing assistant in Kenya. Current: {TODAY_INFO} [{TODAY_DATE}] {GREETING}. Draft: {CONTEXT_DRAFT}
 Classify:
-1. CHITCHAT: Hi, Who are you, What can you do, Help, How does it work -> {"role":"chat"}
-2. RIDE: Extract from/to/date/time - "from Juja to Thika now", "Juja to Thika at 9am tomorrow", "Friday to Thika", "Isiolo to Kangemi tomorrow at 6 pm", "Need ride Monday 8am" -> {"role":"rider", from, to, date, time}
-   date can be: today, tomorrow, monday, tuesday, wednesday, thursday, friday, saturday, sunday
-3. DRIVER: "I want to offer ride from X to Y", "offering ride Juja to Thika", "driving from Kenol to Meri" -> {"role":"driver", from, to}
-4. COMMAND: TAKE 1, ONLINE, OFFLINE, FILTER Juja, CLEAR FILTERS, NEXT -> {"role":"command"}
+1. CHITCHAT: Hi, Who are you, What can you do, Help -> {"role":"chat"}
+2. RIDER: Someone NEEDS a ride - "Need a ride", "Need ride Juja to Thika", "I need a ride to Thika", "from Juja to Thika now" -> {"role":"rider", from, to, date, time}
+3. DRIVER: Someone WANTS TO OFFER a ride - "Need to offer ride", "I need to offer ride", "I want to offer ride", "I have a ride", "Offer ride", "Offering ride", "Driving from X to Y", "I am driving", "I want to offer ride from X to Y" -> {"role":"driver", from, to}
+4. COMMAND: ONLINE, OFFLINE, FILTER Juja, CLEAR, NEXT, TAKE 1 -> {"role":"command"}
 Return ONLY JSON:
 {"role":"rider|driver|command|chat","command":"ONLINE|OFFLINE|SHOW_REQUESTS|TAKE|FILTER|CLEAR_FILTERS|NEXT|null","filter":string|null,"takeId":number|null,"from":string|null,"to":string|null,"date":"today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|null","time":"HH:MM|now|null","seats":number|null}
 `;
@@ -302,10 +278,10 @@ async function answerGeneralQuestion(q, loc="Juja") {
     if (['hi','hey','hello','niaje','mambo','hii','heyy','yo'].includes(lower)) return `${getTimeGreeting()}! I'm Bett - I help students with rides.`;
     if (lower.includes('who are you') || lower.includes('what are you')) return "I'm Bett! I help students in Kenya connect with affordable rides.";
     if (lower.includes('is there any driver') || lower.includes('any drivers') || lower.includes('are there drivers')) {
-        return "Yes, we have drivers online! If you need a ride, just say Need a ride and tell me where from and where to. If you're a driver, say ONLINE to see ride requests.";
+        return "Yes, we have drivers online! If you need a ride, just say Need a ride and tell me where from and where to. If you're a driver, say 'I want to offer ride from X to Y' to set your route.";
     }
     if (lower.includes('help') || lower.includes('what can you do') || lower.includes('how does it work')) {
-        return "I'm Bett! I connect students who need rides with drivers. Riders: Say 'Need a ride' and tell me your route and time. Drivers: Say 'Online' to see nearby requests, or 'I want to offer ride from X to Y' to set your route and see matching rides. Reply with ride ID to take.";
+        return "I'm Bett! I connect students who need rides with drivers. Riders: Say 'Need a ride' and tell me your route and time. Drivers: Say 'Need to offer ride' or 'I want to offer ride from Juja to Thika' to go online and see matching rides. Reply with ride ID to take.";
     }
     try {
         let sys = `You are Bett, a friendly knowledgeable assistant. Rules: Answer in clear correct English, perfect complete answer in 2-4 sentences, informative not too short, full context with dates/location, Do NOT say "Juja to Thika", No emojis, Location: ${loc}`;
@@ -387,7 +363,6 @@ async function handleRideLogic(phoneJid, text, realPhone) {
         if (lowerText.length < 2) return;
         const userPhoneKey = realPhone||phoneJid;
 
-        // RATING CHECK FIRST - USE SEPARATE MAP
         if (ratingSessions[userPhoneKey]) {
             let rate = parseRating(lowerText);
             console.log(`RATING ATTEMPT ${userPhoneKey}: ${lowerText} -> ${rate}, session:`, ratingSessions[userPhoneKey]);
@@ -441,12 +416,9 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             let otherPhone = null;
             if (activeChats[userPhoneKey]) otherPhone = activeChats[userPhoneKey].with;
             else if (rideToRate) { otherPhone = rideToRate.phone === userPhoneKey? rideToRate.driverPhone : rideToRate.phone; }
-
             console.log(`END RIDE ${userPhoneKey} ride ${rideToRate?.id} other ${otherPhone}`);
-
             killChatFor(userPhoneKey);
             clearSession(userPhoneKey);
-
             if (rideToRate && otherPhone) {
                 ratingSessions[userPhoneKey] = { rideId: rideToRate.id, other: otherPhone };
                 ratingSessions[otherPhone] = { rideId: rideToRate.id, other: userPhoneKey };
@@ -491,32 +463,69 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             if (lowerText.includes('👍') || lowerText.includes('❤️') || lowerText.includes('😍')) { if (lowerText.length < 5) return; }
         }
 
-        let route = extractRouteFromText(text);
-        if (route && (lowerText.includes('offer') || lowerText.includes('driving') || lowerText.includes('driver') || (lowerText.includes('from') && lowerText.includes('to')))) {
-            let u = await User.getOrCreate(userPhoneKey);
-            await u.setOnline(route.from,2);
-            u.filterFrom = route.from;
-            await u.save();
-            killChatFor(userPhoneKey);
-            clearSession(userPhoneKey);
-            let allRides = await RideRequest.getNearby(route.from);
-            let matched = allRides.filter(r => {
-                if (isPollutedRide(r)) return false;
-                let rf = (r.from||'').toLowerCase();
-                let rt = (r.to||'').toLowerCase();
-                let df = route.from.toLowerCase();
-                let dt = route.to.toLowerCase();
-                return rf.includes(df) || rt.includes(dt) || rf.includes(dt) || rt.includes(df) || df.includes(rf) || dt.includes(rt);
-            });
-            let ridesToShow = matched.length>0? matched : allRides;
-            await sendGupshupMessage(phoneJid, `ONLINE AS DRIVER: ${route.from}→${route.to} | Your rating: ${(u.rating||5).toFixed(1)}⭐(${u.ratingCount||0}) | ${ridesToShow.length} matching`);
-            await sendRidesList(phoneJid, ridesToShow, `${ridesToShow.length} RIDES MATCHING ${route.from.toUpperCase()}→${route.to.toUpperCase()}:`, 0);
-            let s = getSession(userPhoneKey);
-            s.driverRoute = route;
-            s.ridesList = ridesToShow;
-            s.ridesPage = 0;
-            s.lastTitle = `${ridesToShow.length} RIDES MATCHING ${route.from.toUpperCase()}→${route.to.toUpperCase()}:`;
-            return;
+        // === DRIVER INTENT WITH AI UNDERSTANDING - MUST BE BEFORE isSimpleLocation ===
+        if ((lowerText.includes('offer') && (lowerText.includes('ride') || lowerText.includes('trip'))) || lowerText.includes('offering ride') || lowerText === 'need to offer ride' || lowerText === 'i need to offer ride' || lowerText === 'i want to offer ride' || lowerText === 'want to offer ride') {
+            let routeNow = extractRouteFromText(text);
+            if (routeNow) {
+                let u = await User.getOrCreate(userPhoneKey);
+                await u.setOnline(routeNow.from,2);
+                u.filterFrom = routeNow.from;
+                await u.save();
+                killChatFor(userPhoneKey);
+                clearSession(userPhoneKey);
+                delete ratingSessions[userPhoneKey];
+                let allRides = await RideRequest.getNearby(routeNow.from);
+                let matched = allRides.filter(r => {
+                    if (isPollutedRide(r)) return false;
+                    let rf = (r.from||'').toLowerCase();
+                    let rt = (r.to||'').toLowerCase();
+                    return rf.includes(routeNow.from.toLowerCase()) || rt.includes(routeNow.to.toLowerCase()) || routeNow.from.toLowerCase().includes(rf) || routeNow.to.toLowerCase().includes(rt);
+                });
+                let ridesToShow = matched.length>0? matched : allRides;
+                await sendGupshupMessage(phoneJid, `ONLINE AS DRIVER: ${routeNow.from}→${routeNow.to} | Your rating: ${(u.rating||5).toFixed(1)}⭐(${u.ratingCount||0}) | ${ridesToShow.length} matching`);
+                await sendRidesList(phoneJid, ridesToShow, `${ridesToShow.length} RIDES MATCHING ${routeNow.from.toUpperCase()}→${routeNow.to.toUpperCase()}:`, 0);
+                let s = getSession(userPhoneKey);
+                s.driverRoute = routeNow;
+                s.ridesList = ridesToShow;
+                s.ridesPage = 0;
+                s.lastTitle = `${ridesToShow.length} RIDES MATCHING ${routeNow.from.toUpperCase()}→${routeNow.to.toUpperCase()}:`;
+                return;
+            } else {
+                let sess = getSession(userPhoneKey);
+                sess.draft = { role: 'driver' };
+                await sendGupshupMessage(phoneJid, `Great! You want to offer a ride 🚗\nWhere are you driving from? Example: Juja`);
+                return;
+            }
+        }
+
+        let driverDraft = getSession(userPhoneKey);
+        if (driverDraft.draft && driverDraft.draft.role === 'driver') {
+            if (!driverDraft.draft.from) {
+                driverDraft.draft.from = text.trim();
+                await sendGupshupMessage(phoneJid, `Got it, driving from ${driverDraft.draft.from} - where to? Example: Thika`);
+                return;
+            }
+            if (driverDraft.draft.from &&!driverDraft.draft.to) {
+                driverDraft.draft.to = text.trim();
+                let u = await User.getOrCreate(userPhoneKey);
+                await u.setOnline(driverDraft.draft.from,2);
+                u.filterFrom = driverDraft.draft.from;
+                await u.save();
+                let allRides = await RideRequest.getNearby(driverDraft.draft.from);
+                let matched = allRides.filter(r => {
+                    if (isPollutedRide(r)) return false;
+                    let rf = (r.from||'').toLowerCase();
+                    let rt = (r.to||'').toLowerCase();
+                    return rf.includes(driverDraft.draft.from.toLowerCase()) || rt.includes(driverDraft.draft.to.toLowerCase());
+                });
+                let ridesToShow = matched.length>0? matched : allRides;
+                await sendGupshupMessage(phoneJid, `ONLINE AS DRIVER: ${driverDraft.draft.from}→${driverDraft.draft.to} | Your rating: ${(u.rating||5).toFixed(1)}⭐ | ${ridesToShow.length} matching rides`);
+                await sendRidesList(phoneJid, ridesToShow, `${ridesToShow.length} RIDES MATCHING ${driverDraft.draft.from.toUpperCase()}→${driverDraft.draft.to.toUpperCase()}:`, 0);
+                clearSession(userPhoneKey);
+                let s2 = getSession(userPhoneKey);
+                s2.ridesList = ridesToShow;
+                return;
+            }
         }
 
         if (lowerText==='need a ride' || lowerText==='need ride' || lowerText.startsWith('need a ride') || lowerText==='i need a ride' || lowerText.includes('i need a ride to')) {
