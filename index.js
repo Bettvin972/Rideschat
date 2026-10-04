@@ -21,7 +21,90 @@ const userSessions = {};
 const activeChats = {};
 const ratingSessions = {};
 
-// --- HELPER FUNCTIONS ---
+// --- LOCATION CLUSTERING & PROXIMITY HELPERS ---
+
+const LOCATION_ZONES = {
+    'north_dfw': ['denton', 'frisco', 'plano', 'mckinney', 'little elm', 'prosper', 'lewisville'],
+    'central_dfw': ['dallas', 'richardson', 'garland', 'irving', 'carrollton', 'fort worth'],
+    'juja_corridor': ['juja', 'gate c', 'gate A', 'gate B', 'juja main', 'kalimoni', 'highpoint', 'ruiru', 'thika']
+};
+
+function normalizeLocation(locStr) {
+    if (!locStr) return '';
+    return locStr.toLowerCase().replace(/[^a-z0-9\s]/g, '').trim();
+}
+
+function areLocationsNearby(locA, locB) {
+    const cleanA = normalizeLocation(locA);
+    const cleanB = normalizeLocation(locB);
+
+    if (!cleanA || !cleanB) return false;
+    if (cleanA.includes(cleanB) || cleanB.includes(cleanA)) return true;
+
+    for (const zone in LOCATION_ZONES) {
+        const members = LOCATION_ZONES[zone];
+        const aInZone = members.some(m => cleanA.includes(m));
+        const bInZone = members.some(m => cleanB.includes(m));
+
+        if (aInZone && bInZone) return true;
+    }
+    return false;
+}
+
+// --- COUNTDOWN & COUNTDOWN SORTING HELPERS ---
+
+function getCountdownText(rideTimeStr, rideDateStr) {
+    const now = getNairobiNow();
+    const targetDate = rideDateStr ? new Date(rideDateStr) : new Date(now);
+    
+    if (rideTimeStr && rideTimeStr !== 'now' && rideTimeStr !== 'Flexible') {
+        const [h, m] = rideTimeStr.split(':').map(Number);
+        if (!isNaN(h)) {
+            targetDate.setHours(h, m || 0, 0, 0);
+        }
+    }
+
+    const diffMs = targetDate.getTime() - now.getTime();
+    const diffMins = Math.round(diffMs / (1000 * 60));
+
+    if (diffMins <= 0 && diffMins > -15) return 'NOW';
+    if (diffMins <= -15) return 'OVERDUE';
+    if (diffMins < 60) return `in ${diffMins}m`;
+    
+    const diffHours = Math.floor(diffMins / 60);
+    const remMins = diffMins % 60;
+    return `in ${diffHours}h${remMins}m`;
+}
+
+function sortAndTagRides(rides) {
+    const now = getNairobiNow();
+
+    return rides.map(ride => {
+        let departureDate = ride.date ? new Date(ride.date) : new Date(now);
+        if (ride.time && ride.time !== 'now' && ride.time !== 'Flexible') {
+            const [h, m] = ride.time.split(':').map(Number);
+            if (!isNaN(h)) {
+                departureDate.setHours(h, m || 0, 0, 0);
+            }
+        }
+
+        const diffMins = Math.round((departureDate.getTime() - now.getTime()) / (1000 * 60));
+        const isUrgent = diffMins >= -10 && diffMins <= 30;
+        
+        return {
+            ...ride,
+            diffMins,
+            isUrgent,
+            countdownStr: getCountdownText(ride.time, ride.date)
+        };
+    }).sort((a, b) => {
+        if (a.isUrgent && !b.isUrgent) return -1;
+        if (!a.isUrgent && b.isUrgent) return 1;
+        return a.diffMins - b.diffMins;
+    });
+}
+
+// --- GENERAL HELPER FUNCTIONS ---
 
 function normalizePhone(jid) {
     if (!jid) return '';
@@ -131,7 +214,7 @@ function toDisplayTime(t) {
     if (isNaN(h)) return t;
     let ap = h>=12?'PM':'AM'; 
     let hh = h%12||12;
-    return `${hh}:${String(m||0).padStart(2,'0')} ${ap}`;
+    return `${hh}:${String(m\vert{}\vert{}0).padStart(2,'0')}${ap}`;
 }
 
 function toDisplayDate(d) {
@@ -159,10 +242,6 @@ function getDirectChatLink(jid) {
 
 function parseRating(txt) {
     const t = txt.toLowerCase().trim();
-    if (t.includes('⭐')) {
-        const count = (t.match(/⭐/g) || []).length;
-        if (count >= 1 && count <= 5) return count;
-    }
     if (/^[1-5]$/.test(t)) return parseInt(t, 10);
     let m = t.match(/\b([1-5])\b/);
     if (m) return parseInt(m[1], 10);
@@ -182,7 +261,7 @@ async function addRatingToUser(phone, newRating) {
             fresh.ratingCount = countBefore + 1;
         }
         await fresh.save();
-        console.log(`RATING SAVED: ${phone} rated ${newRating}, new avg ${fresh.rating.toFixed(1)} count ${fresh.ratingCount}`);
+        console.log(`RATING SAVED: ${phone} rated${newRating}, new avg ${fresh.rating.toFixed(1)} count${fresh.ratingCount}`);
         return fresh.rating;
     } catch(e) { 
         console.error("Rating save error:", e.stack); 
@@ -213,53 +292,61 @@ async function sendGupshupMessage(toJid, txt) {
 }
 
 async function sendRidesList(toJid, rides, title="RIDES:", page=0) {
-    if (!rides || rides.length===0) {
+    if (!rides || rides.length === 0) {
         await sendGupshupMessage(toJid, `${title}\nNo rides now. Try FILTER Juja or CLEAR`);
         return;
     }
     let cleanRides = rides.filter(r => !isPollutedRide(r));
-    if (cleanRides.length===0) {
+    if (cleanRides.length === 0) {
         await sendGupshupMessage(toJid, `No valid rides. Try CLEAR FILTERS`);
         return;
     }
-    rides = cleanRides;
+
+    const sortedRides = sortAndTagRides(cleanRides.map(r => r.dataValues || r));
+
     const PAGE_SIZE = 10;
     const start = page * PAGE_SIZE;
-    const chunk = rides.slice(start, start+PAGE_SIZE);
-    const totalPages = Math.ceil(rides.length / PAGE_SIZE);
-    if (chunk.length===0) {
+    const chunk = sortedRides.slice(start, start + PAGE_SIZE);
+    const totalPages = Math.ceil(sortedRides.length / PAGE_SIZE);
+
+    if (chunk.length === 0) {
         await sendGupshupMessage(toJid, `End of list. Type NEXT to start over`);
         return;
     }
-    let header = `*${title.toUpperCase()} (${rides.length}) P${page+1}/${totalPages}*\n`;
+
+    let header = `*${title.toUpperCase()} (${sortedRides.length}) P${page + 1}/${totalPages}*\n`;
     let lines = [];
+
     for (let r of chunk) {
-        let from = (r.from||'Juja').split(',')[0].split(' ')[0].substring(0,12).replace(/[^a-zA-Z]/g,'');
-        let to = (r.to||'Thika').split(',')[0].split(' ')[0].substring(0,12).replace(/[^a-zA-Z]/g,'');
-        if (from.length<2) from='Juja'; if (to.length<2) to='Thika';
-        from = from.charAt(0).toUpperCase()+from.slice(1).toLowerCase();
-        to = to.charAt(0).toUpperCase()+to.slice(1).toLowerCase();
-        let time = toDisplayTime(r.time);
-        let date = r.date ? toDisplayDate(r.date) : 'Today';
-        if (date.toLowerCase().includes('who') || date.toLowerCase().includes('where') || date.length>15) date = 'Today';
-        if (date.includes(' ')) date = date.split(' ')[0];
+        let from = (r.from || 'Juja').split(',')[0].split(' ')[0].substring(0, 12);
+        let to = (r.to || 'Thika').split(',')[0].split(' ')[0].substring(0, 12);
+        
+        from = from.charAt(0).toUpperCase() + from.slice(1).toLowerCase();
+        to = to.charAt(0).toUpperCase() + to.slice(1).toLowerCase();
+
+        let timeStr = toDisplayTime(r.time);
         let rate = '5.0';
         let cnt = 0;
+
         try { 
             let u = await User.getOrCreate(r.phone); 
-            rate = (u.rating||5).toFixed(1); 
-            cnt = u.ratingCount||0; 
-        } catch(e){}
-        lines.push(`${r.id}. ${from}→${to} ${time} ${date} ${rate}⭐(${cnt})`);
+            rate = (u.rating || 5).toFixed(1); 
+            cnt = u.ratingCount || 0; 
+        } catch(e) {}
+
+        let urgentTag = r.isUrgent ? `[URGENT] ` : ``;
+        lines.push(`${urgentTag}${r.id}. ${from} -> ${to} (${timeStr} | ${r.countdownStr}) Rating: ${rate} (${cnt})`);
     }
+
     let footer = `\nReply ID e.g. ${chunk[0].id}\n`;
-    if (totalPages > 1 && page < totalPages-1) footer += `NEXT for more | FILTER city`;
+    if (totalPages > 1 && page < totalPages - 1) footer += `NEXT for more | FILTER city`;
     else footer += `FILTER city | CLEAR`;
-    
+
     let sess = getSession(toJid);
-    sess.ridesList = rides;
+    sess.ridesList = sortedRides;
     sess.ridesPage = page;
     sess.lastTitle = title;
+    
     await sendGupshupMessage(toJid, header + lines.join('\n') + footer);
 }
 
@@ -269,7 +356,7 @@ async function checkAndForwardChat(phoneJid, text, realPhone) {
     if (!chat) return false;
     try {
         let ride = await RideRequest.findById(chat.rideId);
-        if (!ride || ride.status!=='TAKEN') { 
+        if (!ride || ride.status !== 'TAKEN') { 
             killChatFor(userPhoneKey); 
             return false; 
         }
@@ -318,8 +405,8 @@ Current Context:
 - Active User Draft Session: {CONTEXT_DRAFT}
 
 CLASSIFICATION RULES:
-1. "rider": User NEEDS/WANTS a ride (e.g., "Need a ride", "taking a cab to Thika", "who is going to Juja now?", "need ride ASAP", "from Juja to Thika").
-   - CRITICAL: If Active User Draft Session has "role": "rider" or "role": "driver", map isolated place names (e.g., "Houston", "Dallas", "Thika") or time answers to the missing "from", "to", or "time" fields. NEVER classify single-word slot responses as "chat".
+1. "rider": User NEEDS/WANTS a ride (e.g., "Need a ride", "taking a cab to Thika", "who is going to Juja now?", "need ride ASAP", "from Juja to Thika", "denton to dallas").
+   - CRITICAL: If Active User Draft Session has "role": "rider" or "role": "driver", map isolated place names (e.g., "Denton", "Dallas", "Houston", "Thika") or time answers to missing "from", "to", or "time" fields. NEVER classify single-word slot responses as "chat".
 2. "driver": User OWNS/OFFERS a ride or vehicle (e.g., "giving ride now", "ride available", "driving to Thika", "offering 3 seats from Juja", "car ready", "leaving Juja shortly", "I want to offer ride").
 3. "command": Precise action flags like ONLINE, OFFLINE, SHOW_REQUESTS, CLEAR_FILTERS, NEXT, TAKE [ID], FILTER [Location], END_RIDE.
 4. "chat": General knowledge questions, greetings, or off-topic queries ONLY when NOT responding to an active draft prompt.
@@ -408,11 +495,11 @@ async function handleRideLogic(phoneJid, text, realPhone) {
                 delete ratingSessions[phoneJid];
                 delete ratingSessions[normalizePhone(otherTarget)];
                 
-                await sendGupshupMessage(phoneJid, `✅ Rating saved! You rated ${rate}⭐ for trip ${rideId}. New avg for them: ${newAvg.toFixed(1)}⭐\n\nNeed another? Say: Need a ride`);
+                await sendGupshupMessage(phoneJid, `Rating saved! You rated ${rate} stars for trip ${rideId}. New avg for them: ${newAvg.toFixed(1)}\n\nNeed another? Say: Need a ride`);
                 
                 try {
                     let otherUser = await User.getOrCreate(otherTarget);
-                    await sendGupshupMessage(otherTarget, `You received ${rate}⭐ for trip ${rideId}! Your new avg: ${otherUser.rating.toFixed(1)}⭐(${otherUser.ratingCount||0})`);
+                    await sendGupshupMessage(otherTarget, `You received ${rate} stars for trip ${rideId}! Your new avg: ${otherUser.rating.toFixed(1)} (${otherUser.ratingCount||0})`);
                 } catch(e){}
                 return;
             } else if (lowerText.includes('skip') || lowerText === 'no') {
@@ -451,8 +538,8 @@ async function handleRideLogic(phoneJid, text, realPhone) {
                     let rider = await User.getOrCreate(ride.phone);
                     let driver = await User.getOrCreate(userPhoneKey);
                     
-                    await sendGupshupMessage(phoneJid, `MATCHED ${ride.id} ${ride.from} -> ${ride.to} ${toDisplayTime(ride.time)}\nRider: ${getDirectChatLink(ride.phone)} | ${(rider.rating||5).toFixed(1)}⭐(${rider.ratingCount||0})\nYour rating: ${(driver.rating||5).toFixed(1)}⭐(${driver.ratingCount||0})\nEND RIDE when done`);
-                    await sendGupshupMessage(ride.phone, `DRIVER FOUND ${ride.id} ${ride.from} -> ${ride.to}\nDriver: ${getDirectChatLink(userPhoneKey)} | ${(driver.rating||5).toFixed(1)}⭐(${driver.ratingCount||0})\nYour rating: ${(rider.rating||5).toFixed(1)}⭐(${rider.ratingCount||0})`);
+                    await sendGupshupMessage(phoneJid, `MATCHED ${ride.id} ${ride.from} -> ${ride.to} ${toDisplayTime(ride.time)}\nRider: ${getDirectChatLink(ride.phone)} | Rating: ${(rider.rating||5).toFixed(1)} (${rider.ratingCount||0})\nYour rating: ${(driver.rating||5).toFixed(1)} (${driver.ratingCount||0})\nEND RIDE when done`);
+                    await sendGupshupMessage(ride.phone, `DRIVER FOUND ${ride.id} ${ride.from} -> ${ride.to}\nDriver: ${getDirectChatLink(userPhoneKey)} | Rating: ${(driver.rating||5).toFixed(1)} (${driver.ratingCount||0})\nYour rating: ${(rider.rating||5).toFixed(1)} (${rider.ratingCount||0})`);
                     return;
                 } else { await sendGupshupMessage(phoneJid, `Ride ${rideId} already taken`); return; }
             }
@@ -485,7 +572,7 @@ async function handleRideLogic(phoneJid, text, realPhone) {
 
             if (!from) {
                 currentSess.draft = { role: 'driver' };
-                await sendGupshupMessage(phoneJid, `Great! You want to offer a ride 🚗\nWhere are you driving from? Example: Juja`);
+                await sendGupshupMessage(phoneJid, `Great! You want to offer a ride.\nWhere are you driving from? Example: Denton or Juja`);
                 return;
             }
 
@@ -493,7 +580,7 @@ async function handleRideLogic(phoneJid, text, realPhone) {
 
             if (from && !to) {
                 currentSess.draft = { role: 'driver', from: from };
-                await sendGupshupMessage(phoneJid, `Got it, driving from ${from} — where to? Example: Thika`);
+                await sendGupshupMessage(phoneJid, `Got it, driving from ${from} -- where to? Example: Dallas or Thika`);
                 return;
             }
 
@@ -504,17 +591,15 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             u.filterFrom = from;
             await u.save();
 
-            let allRides = await RideRequest.getNearby(from);
+            let allRides = await RideRequest.findAll({ where: { status: 'OPEN' } });
             let matched = allRides.filter(r => {
                 if (isPollutedRide(r)) return false;
-                let rf = (r.from || '').toLowerCase();
-                let rt = (r.to || '').toLowerCase();
-                return rf.includes(from.toLowerCase()) || rt.includes(to.toLowerCase());
+                return areLocationsNearby(from, r.from) || areLocationsNearby(to, r.to);
             });
 
             let ridesToShow = matched.length > 0 ? matched : allRides;
-            await sendGupshupMessage(phoneJid, `ONLINE AS DRIVER: ${from}→${to} | Your rating: ${(u.rating||5).toFixed(1)}⭐(${u.ratingCount||0}) | ${ridesToShow.length} matching`);
-            await sendRidesList(phoneJid, ridesToShow, `${ridesToShow.length} RIDES MATCHING ${from.toUpperCase()}→${to.toUpperCase()}:`, 0);
+            await sendGupshupMessage(phoneJid, `ONLINE AS DRIVER: ${from} -> ${to} | Rating: ${(u.rating||5).toFixed(1)} (${u.ratingCount||0}) | ${ridesToShow.length} matching`);
+            await sendRidesList(phoneJid, ridesToShow, `${ridesToShow.length} RIDES MATCHING ${from.toUpperCase()} -> ${to.toUpperCase()}:`, 0);
             
             clearSession(userPhoneKey);
             let s = getSession(userPhoneKey);
@@ -532,7 +617,7 @@ async function handleRideLogic(phoneJid, text, realPhone) {
 
             if (!from) {
                 currentSess.draft = { role: 'rider' };
-                await sendGupshupMessage(phoneJid, `Got it! Where are you riding from? Example: Juja`);
+                await sendGupshupMessage(phoneJid, `Got it! Where are you riding from? Example: Denton or Juja`);
                 return;
             }
 
@@ -540,7 +625,7 @@ async function handleRideLogic(phoneJid, text, realPhone) {
 
             if (from && !to) {
                 currentSess.draft = { role: 'rider', from: from };
-                await sendGupshupMessage(phoneJid, `Got it, from ${from} — where to?`);
+                await sendGupshupMessage(phoneJid, `Got it, from ${from} -- where to?`);
                 return;
             }
 
@@ -548,7 +633,7 @@ async function handleRideLogic(phoneJid, text, realPhone) {
 
             if (from && to && !time) {
                 currentSess.draft = { role: 'rider', from: from, to: to, date: date };
-                await sendGupshupMessage(phoneJid, `Got it, ${from} → ${to}. What time? Reply Now or 9 AM`);
+                await sendGupshupMessage(phoneJid, `Got it, ${from} -> ${to}. What time? Reply Now or 9 AM`);
                 return;
             }
 
@@ -556,12 +641,16 @@ async function handleRideLogic(phoneJid, text, realPhone) {
 
             let rideReq = await RideRequest.createCustom(userPhoneKey, { from, to, time, date });
             let dispDate = toDisplayDate(date);
-            await sendGupshupMessage(phoneJid, `RIDE ${rideReq.id} CREATED\n${rideReq.from} → ${rideReq.to} ${toDisplayTime(rideReq.time)} ${dispDate}\nAlerting drivers...`);
+            await sendGupshupMessage(phoneJid, `RIDE ${rideReq.id} CREATED\n${rideReq.from} -> ${rideReq.to} ${toDisplayTime(rideReq.time)} ${dispDate}\nAlerting drivers...`);
             
-            var drivers = await User.getOnlineNearby(rideReq.from);
-            var filteredDrivers = drivers.filter(d => normalizePhone(d.phone || '') !== normKey);
+            var drivers = await User.findAll({ where: { isOnline: true } });
+            var filteredDrivers = drivers.filter(d => {
+                if (normalizePhone(d.phone || '') === normKey) return false;
+                return !d.location || areLocationsNearby(d.location, rideReq.from) || areLocationsNearby(d.location, rideReq.to);
+            });
+
             for (let d of filteredDrivers) {
-                await sendGupshupMessage(d.phone, `${rideReq.id}. ${rideReq.from} → ${rideReq.to} | ${toDisplayTime(rideReq.time)} ${dispDate}\nReply ${rideReq.id}`);
+                await sendGupshupMessage(d.phone, `NEW RIDE MATCH: ${rideReq.id}. ${rideReq.from} -> ${rideReq.to} | ${toDisplayTime(rideReq.time)} ${dispDate}\nReply ${rideReq.id}`);
             }
             
             clearSession(userPhoneKey);
@@ -621,11 +710,22 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             }
 
             if (ai.command === 'ONLINE') {
+                let parts = text.trim().split(/\s+/);
+                let requestedLoc = ai.filter || (parts.length > 1 ? parts.slice(1).join(' ') : null);
+                
                 let u = await User.getOrCreate(userPhoneKey);
-                await u.setOnline(ai.filter || "Juja", 2);
-                var nearby = await RideRequest.getNearby(u.location);
-                await sendGupshupMessage(phoneJid, `ONLINE: ${u.location} | ${(u.rating||5).toFixed(1)}⭐(${u.ratingCount||0})`);
-                await sendRidesList(phoneJid, nearby, `${nearby.length} RIDES NEAR ${u.location.toUpperCase()}:`);
+                let driverLoc = requestedLoc || u.location || "Juja";
+                await u.setOnline(driverLoc, 2);
+
+                let allRides = await RideRequest.findAll({ where: { status: 'OPEN' } });
+                let nearby = allRides.filter(r => {
+                    if (isPollutedRide(r)) return false;
+                    return areLocationsNearby(driverLoc, r.from) || areLocationsNearby(driverLoc, r.to);
+                });
+
+                let displayRides = nearby.length > 0 ? nearby : allRides;
+                await sendGupshupMessage(phoneJid, `ONLINE: ${driverLoc} | Rating: ${(u.rating||5).toFixed(1)} (${u.ratingCount||0})`);
+                await sendRidesList(phoneJid, displayRides, `${displayRides.length} RIDES NEAR ${driverLoc.toUpperCase()}:`);
                 return;
             }
 
@@ -633,21 +733,21 @@ async function handleRideLogic(phoneJid, text, realPhone) {
                 let u = await User.getOrCreate(userPhoneKey);
                 u.filterFrom = null;
                 await u.save();
-                let nearby = await RideRequest.getNearby(u.location || 'Juja');
+                let nearby = await RideRequest.findAll({ where: { status: 'OPEN' } });
                 await sendRidesList(phoneJid, nearby, `Filters cleared - ${nearby.length} RIDES:`, 0);
                 return;
             }
 
             if (ai.command === 'SHOW_REQUESTS') {
-                let nearby = await RideRequest.getNearby("Juja");
-                await sendRidesList(phoneJid, nearby, `${nearby.length} RIDES IN JUJA:`);
+                let nearby = await RideRequest.findAll({ where: { status: 'OPEN' } });
+                await sendRidesList(phoneJid, nearby, `${nearby.length} OPEN RIDES:`);
                 return;
             }
         }
 
         // --- ROLE: CHAT ---
         let reply = await answerGeneralQuestion(text, (currentSess.draft && currentSess.draft.from) || "Juja");
-        if (!reply) reply = `${getTimeGreeting()}! I'm Bett — I help students with rides.`;
+        if (!reply) reply = `${getTimeGreeting()}! I'm Bett -- I help students with rides.`;
         await sendGupshupMessage(phoneJid, reply);
 
     } catch (err) {
@@ -678,11 +778,11 @@ async function startWhatsApp() {
     sock.ev.on('connection.update', async (u) => {
         const { connection, lastDisconnect, qr } = u;
         if (qr) qrLast = qr;
-        if (connection==='open') { console.log('WA Connected'); qrLast=null; }
-        if (connection==='close') {
+        if (connection === 'open') { console.log('WA Connected'); qrLast = null; }
+        if (connection === 'close') {
             const code = lastDisconnect?.error?.output?.statusCode;
-            qrLast=null; sock=null;
-            if (code===DisconnectReason.loggedOut || code===401) { 
+            qrLast = null; sock = null;
+            if (code === DisconnectReason.loggedOut || code === 401) { 
                 if (fs.existsSync(AUTH_PATH)) fs.rmSync(AUTH_PATH, { recursive: true, force: true }); 
             }
             setTimeout(startWhatsApp, 5000);
@@ -695,7 +795,7 @@ async function startWhatsApp() {
             const msg = messages[0];
             if (!msg.message || msg.key.fromMe) return;
             const remoteJid = msg.key.remoteJid || "";
-            if (remoteJid==='status@broadcast' || remoteJid.includes('@g.us')) return;
+            if (remoteJid === 'status@broadcast' || remoteJid.includes('@g.us')) return;
             
             let text = msg.message.conversation || msg.message.extendedTextMessage?.text || msg.message.imageMessage?.caption || "";
             if (msg.message.buttonsResponseMessage) text = msg.message.buttonsResponseMessage.selectedButtonId || "";
