@@ -24,40 +24,17 @@ const ratingSessions = {};
 function detectUserRegion(jid) {
     const rawDigits = (jid || '').split('@')[0].replace(/[^0-9]/g, '');
     if (rawDigits.startsWith('1') || (rawDigits.length === 10 &&!rawDigits.startsWith('0'))) {
-        return {
-            country: 'US',
-            timezone: 'America/Chicago',
-            defaultCity: 'Denton',
-            defaultDestination: 'Dallas',
-            examplePlaces: 'Denton or Frisco',
-            exampleDest: 'Dallas or Fort Worth'
-        };
+        return { country: 'US', timezone: 'America/Chicago', defaultCity: 'Denton', defaultDestination: 'Dallas', examplePlaces: 'Denton or Frisco', exampleDest: 'Dallas or Fort Worth' };
     }
     if (rawDigits.startsWith('254') || (rawDigits.startsWith('0') && rawDigits.length === 10)) {
-        return {
-            country: 'KE',
-            timezone: 'Africa/Nairobi',
-            defaultCity: 'Juja',
-            defaultDestination: 'Nairobi',
-            examplePlaces: 'Juja or Ruiru',
-            exampleDest: 'Thika or Nairobi'
-        };
+        return { country: 'KE', timezone: 'Africa/Nairobi', defaultCity: 'Juja', defaultDestination: 'Nairobi', examplePlaces: 'Juja or Ruiru', exampleDest: 'Thika or Nairobi' };
     }
-    return {
-        country: 'US',
-        timezone: 'America/Chicago',
-        defaultCity: 'Main Campus',
-        defaultDestination: 'Downtown',
-        examplePlaces: 'Campus or North Side',
-        exampleDest: 'Downtown or Station'
-    };
+    return { country: 'US', timezone: 'America/Chicago', defaultCity: 'Main Campus', defaultDestination: 'Downtown', examplePlaces: 'Campus or North Side', exampleDest: 'Downtown or Station' };
 }
-
 function normalizeLocation(locStr) {
     if (!locStr) return '';
     return locStr.toLowerCase().replace(/[^a-z0-9\s]/g, '').trim();
 }
-
 function areLocationsNearby(locA, locB) {
     const cleanA = normalizeLocation(locA);
     const cleanB = normalizeLocation(locB);
@@ -67,12 +44,9 @@ function areLocationsNearby(locA, locB) {
     const wordsB = cleanB.split(/\s+/);
     return wordsA.some(w => w.length > 3 && wordsB.includes(w));
 }
-
-// --- DYNAMIC TIME & COUNTDOWN HELPERS ---
 function getUserNow(timezone) {
     return new Date(new Date().toLocaleString('en-US', { timeZone: timezone }));
 }
-
 function getTimeGreeting(timezone) {
     if (timezone === undefined) timezone = 'America/Chicago';
     const h = getUserNow(timezone).getHours();
@@ -81,7 +55,6 @@ function getTimeGreeting(timezone) {
     if (h >= 15 && h < 19) return "Good evening";
     return "Hello";
 }
-
 function getCountdownText(rideTimeStr, rideDateStr, timezone) {
     const now = getUserNow(timezone);
     const targetDate = rideDateStr? new Date(rideDateStr) : new Date(now);
@@ -100,7 +73,6 @@ function getCountdownText(rideTimeStr, rideDateStr, timezone) {
     const remMins = diffMins % 60;
     return 'in ' + diffHours + 'h' + remMins + 'm';
 }
-
 function sortAndTagRides(rides, timezone) {
     const now = getUserNow(timezone);
     return rides.map(ride => {
@@ -120,13 +92,10 @@ function sortAndTagRides(rides, timezone) {
         return a.diffMins - b.diffMins;
     });
 }
-
-// --- GENERAL HELPERS ---
 function normalizePhone(jid) {
     if (!jid) return '';
     return jid.split('@')[0].replace(/[^0-9]/g, '');
 }
-
 function getSession(phone) {
     if (!userSessions[phone]) userSessions[phone] = { draft: {}, lastUpdated: Date.now() };
     return userSessions[phone];
@@ -144,7 +113,6 @@ function killChatFor(phone) {
         }
     }
 }
-
 function getNextWeekday(targetDay, timezone) {
     const now = getUserNow(timezone);
     const days = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
@@ -156,7 +124,6 @@ function getNextWeekday(targetDay, timezone) {
     result.setDate(now.getDate() + diff);
     return result.toISOString().split('T')[0];
 }
-
 function getRealDate(aiDate, timezone) {
     const now = getUserNow(timezone);
     if (!aiDate) return now.toISOString().split('T')[0];
@@ -183,7 +150,6 @@ function getRealDate(aiDate, timezone) {
     if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
     return now.toISOString().split('T')[0];
 }
-
 function getRealTime(aiTime, timezone) {
     const now = getUserNow(timezone);
     const hh = String(now.getHours()).padStart(2,'0');
@@ -202,7 +168,6 @@ function getRealTime(aiTime, timezone) {
     }
     return hh + ':' + mm;
 }
-
 function toDisplayTime(t) {
     if (!t || t === 'Flexible') return 'now';
     let parts = String(t).split(':');
@@ -213,7 +178,6 @@ function toDisplayTime(t) {
     let hh = h % 12 || 12;
     return hh + ':' + String(m || 0).padStart(2, '0') + ' ' + ap;
 }
-
 function toDisplayDate(d, timezone) {
     if (!d) return '';
     const ld = d.toLowerCase();
@@ -229,12 +193,10 @@ function toDisplayDate(d, timezone) {
     if (isNaN(date.getTime())) return d;
     return date.toLocaleDateString('en-US',{weekday:'short'});
 }
-
 function getDirectChatLink(jid) {
     let num = normalizePhone(jid);
     return 'https://wa.me/' + num;
 }
-
 function parseRating(txt) {
     const t = txt.toLowerCase().trim();
     if (/^[1-5]$/.test(t)) return parseInt(t, 10);
@@ -242,24 +204,17 @@ function parseRating(txt) {
     if (m) return parseInt(m[1], 10);
     return null;
 }
-
 async function addRatingToUser(phone, newRating) {
     try {
         let fresh = await User.getOrCreate(phone);
         let countBefore = fresh.ratingCount || 0;
         let avgBefore = fresh.rating || 5;
-        if (countBefore === 0) {
-            fresh.rating = newRating;
-            fresh.ratingCount = 1;
-        } else {
-            fresh.rating = (avgBefore * countBefore + newRating) / (countBefore + 1);
-            fresh.ratingCount = countBefore + 1;
-        }
+        if (countBefore === 0) { fresh.rating = newRating; fresh.ratingCount = 1; }
+        else { fresh.rating = (avgBefore * countBefore + newRating) / (countBefore + 1); fresh.ratingCount = countBefore + 1; }
         await fresh.save();
         return fresh.rating;
     } catch(e) { return 5; }
 }
-
 function isPollutedRide(r) {
     let f = (r.from||'').toLowerCase();
     let t = (r.to||'').toLowerCase();
@@ -269,7 +224,6 @@ function isPollutedRide(r) {
     if (f.length<2 || t.length<2 || f.length>30 || t.length>30) return true;
     return false;
 }
-
 async function sendGupshupMessage(toJid, txt) {
     if (!toJid ||!sock) return;
     try {
@@ -277,7 +231,6 @@ async function sendGupshupMessage(toJid, txt) {
         await sock.sendMessage(jid, { text: txt });
     } catch(e) { console.error(e.message); }
 }
-
 async function sendRidesList(toJid, rides, title, page, timezone) {
     if (title === undefined) title = "RIDES:";
     if (page === undefined) page = 0;
@@ -329,7 +282,6 @@ async function sendRidesList(toJid, rides, title, page, timezone) {
     sess.lastTitle = title;
     await sendGupshupMessage(toJid, header + lines.join('\n') + footer);
 }
-
 async function checkAndForwardChat(phoneJid, text, realPhone) {
     const userPhoneKey = realPhone || phoneJid;
     let chat = activeChats[userPhoneKey] || activeChats[normalizePhone(userPhoneKey)];
@@ -345,7 +297,6 @@ async function checkAndForwardChat(phoneJid, text, realPhone) {
         return true;
     } catch(e) { return false; }
 }
-
 async function answerGeneralQuestion(q, region, loc) {
     const lower = q.toLowerCase().trim();
     const greeting = getTimeGreeting(region.timezone);
@@ -365,7 +316,6 @@ async function answerGeneralQuestion(q, region, loc) {
         return res.data.choices[0].message.content.trim();
     } catch(e) { return null; }
 }
-
 var SYSTEM_PROMPT = `You are Bett, an AI student ride-sharing assistant operating in {COUNTRY}.
 Current Context:
 - Local Time: {TODAY_INFO} [{TODAY_DATE}]
@@ -387,7 +337,6 @@ Return ONLY JSON:
   "date": string | null,
   "time": string | null
 }`;
-
 async function parseWithAI(msg, region, contextDraft) {
     if (contextDraft === undefined) contextDraft = {};
     var now = getUserNow(region.timezone);
@@ -411,6 +360,7 @@ async function parseWithAI(msg, region, contextDraft) {
     }
 }
 
+// --- MAIN LOGIC WITH FALLBACK FIX ---
 async function handleRideLogic(phoneJid, text, realPhone) {
     try {
         const lowerText = text.toLowerCase().trim();
@@ -418,6 +368,7 @@ async function handleRideLogic(phoneJid, text, realPhone) {
         const userPhoneKey = realPhone || phoneJid;
         const normKey = normalizePhone(userPhoneKey);
         const region = detectUserRegion(userPhoneKey);
+        const rawText = text.trim();
 
         let ratingSess = ratingSessions[userPhoneKey] || ratingSessions[normKey] || ratingSessions[phoneJid];
         if (ratingSess) {
@@ -458,9 +409,8 @@ async function handleRideLogic(phoneJid, text, realPhone) {
                     activeChats[userPhoneKey] = { with: ride.phone, rideId: ride.id };
                     activeChats[normKey] = { with: ride.phone, rideId: ride.id };
                     let rider = await User.getOrCreate(ride.phone);
-                    let driver = await User.getOrCreate(userPhoneKey);
                     await sendGupshupMessage(phoneJid, 'MATCHED ' + ride.id + ' ' + ride.from + ' -> ' + ride.to + ' ' + toDisplayTime(ride.time) + '\nRider: ' + getDirectChatLink(ride.phone) + ' | Rating: ' + (rider.rating||5).toFixed(1) + ' ⭐\nEND RIDE when done');
-                    await sendGupshupMessage(ride.phone, 'DRIVER FOUND ' + ride.id + ' ' + ride.from + ' -> ' + ride.to + '\nDriver: ' + getDirectChatLink(userPhoneKey) + ' | Rating: ' + (driver.rating||5).toFixed(1) + ' ⭐');
+                    await sendGupshupMessage(ride.phone, 'DRIVER FOUND ' + ride.id + ' ' + ride.from + ' -> ' + ride.to + '\nDriver: ' + getDirectChatLink(userPhoneKey) + ' | Rating: ' + ((await User.getOrCreate(userPhoneKey)).rating||5).toFixed(1) + ' ⭐');
                     return;
                 } else { await sendGupshupMessage(phoneJid, 'Ride ' + rideId + ' already taken'); return; }
             }
@@ -480,10 +430,23 @@ async function handleRideLogic(phoneJid, text, realPhone) {
         let currentSess = getSession(userPhoneKey);
         let ai = await parseWithAI(text, region, currentSess.draft || {});
 
+        // --- DRIVER WITH FALLBACK ---
         if (ai.role === 'driver') {
             let draft = currentSess.draft || {};
+            // FALLBACK: use raw text as location if AI missed it
             let from = ai.from || draft.from;
+            if (!from && rawText.length >= 3 && rawText.length <= 30 &&!['online','offline','clear','next','hey','hi','hello','ok'].includes(lowerText)) {
+                from = rawText;
+            }
             let to = ai.to || draft.to;
+            // If draft already has from, and user sends new word, treat as to
+            if (draft.from &&!ai.to &&!to && rawText.toLowerCase()!== draft.from.toLowerCase() && rawText.length >=3) {
+                if (!['kericho','juja','ruiru','thika','nairobi','denton','dallas','frisco'].includes(lowerText) || true) {
+                    // Only if from exists, raw is to
+                    if (from && draft.from) to = rawText;
+                }
+            }
+
             if (!from) {
                 currentSess.draft = { role: 'driver' };
                 await sendGupshupMessage(phoneJid, 'Where are you driving from? Example: ' + region.examplePlaces);
@@ -510,12 +473,31 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             return;
         }
 
+        // --- RIDER WITH FALLBACK - FIXES YOUR SCREENSHOT LOOP ---
         if (ai.role === 'rider') {
             let draft = currentSess.draft || {};
             let from = ai.from || draft.from;
             let to = ai.to || draft.to;
             let time = ai.time || draft.time;
             let date = ai.date || draft.date || getRealDate('today', region.timezone);
+
+            // CRITICAL FALLBACK: If AI returns null but user typed a place like Kericho/Juja, use it
+            if (!from && rawText.length >= 3 && rawText.length <= 30) {
+                const blacklist = ['need a ride','want ride','need ride','i need','online','offline','clear','next','hi','hey','hello','thanks'];
+                if (!blacklist.some(b => lowerText.includes(b))) {
+                    from = rawText;
+                }
+            }
+            if (from &&!to && draft.from) {
+                // Second message after from is to
+                if (rawText.toLowerCase()!== draft.from.toLowerCase() && rawText.length >=3 && rawText.length <=30) {
+                    const blacklist2 = ['now','asap','morning','afternoon','evening','today','tomorrow'];
+                    if (!blacklist2.includes(lowerText)) {
+                        to = rawText;
+                    }
+                }
+            }
+
             if (!from) {
                 currentSess.draft = { role: 'rider' };
                 await sendGupshupMessage(phoneJid, 'Where are you riding from? Example: ' + region.examplePlaces);
@@ -545,7 +527,7 @@ async function handleRideLogic(phoneJid, text, realPhone) {
         }
 
         if (ai.role === 'command' || ai.command) {
-            if (ai.command === 'END_RIDE' || lowerText.includes('end ride') || lowerText.includes('complete trip')) {
+            if (ai.command === 'END_RIDE' || lowerText.includes('end ride') || lowerText.includes('complete trip') || lowerText === 'end' || lowerText === 'end this ride') {
                 let rideToRate = await RideRequest.findOne({ where: { status: 'TAKEN', [Op.or]: [{ phone: userPhoneKey }, { driverPhone: userPhoneKey }, { phone: normKey }, { driverPhone: normKey }] }, order: [['updatedAt', 'DESC']] });
                 if (rideToRate) { rideToRate.status = 'COMPLETED'; await rideToRate.save(); }
                 let otherPhone = null;
@@ -640,7 +622,6 @@ async function startWhatsApp() {
 
 startWhatsApp();
 setInterval(async () => { try { if (RideRequest.clearExpired) await RideRequest.clearExpired(); } catch(e){} }, 15 * 60 * 1000);
-
 app.get('/qr', (req, res) => { if (!qrLast) return res.send("<h1>Connected!</h1>"); var qrImage = "https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=" + encodeURIComponent(qrLast); res.send('<h1>Scan</h1><img src=\'' + qrImage + '\'/>'); });
 app.get('/ping', (req, res) => { res.send("Alive"); });
 app.get('/', (req, res) => { res.send("Bett LIVE - Dynamic Rides - /qr"); });
@@ -657,6 +638,5 @@ app.get('/ratings', async (req, res) => {
     let users = await User.findAll();
     res.json(users.map(u => ({ phone: u.phone, rating: u.rating, count: u.ratingCount })));
 });
-
 var PORT = process.env.PORT || 10000;
 app.listen(PORT, () => { console.log("Bett Running on " + PORT); });
