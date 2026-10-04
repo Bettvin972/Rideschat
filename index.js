@@ -240,6 +240,12 @@ function isPollutedRide(r) {
     if (f.length<2 || t.length<2 || f.length>30 || t.length>30) return true;
     return false;
 }
+function isCommandPhrase(txt) {
+    if (!txt) return true;
+    let l = txt.toLowerCase().trim();
+    let banned = ['i want to give ride','give ride','want to give ride','ride available','i want to offer ride','offer ride','i am driver','online','offline','clear','next','hi','hello','hey','thanks','ok','okay'];
+    return banned.some(b => l === b || l.includes(b));
+}
 async function sendGupshupMessage(toJid, txt) {
     if (!toJid ||!sock) return;
     try {
@@ -252,10 +258,10 @@ async function sendRidesList(toJid, rides, title, page, timezone) {
     if (page === undefined) page = 0;
     if (timezone === undefined) timezone = 'America/Chicago';
     if (!rides || rides.length === 0) {
-        await sendGupshupMessage(toJid, title + "\nNo rides found right now. Try FILTER [City] or CLEAR");
+        await sendGupshupMessage(toJid, "No rides right now.\nSay FILTER Nairobi or CLEAR");
         return;
     }
-    let cleanRides = rides.filter(r =>!isPollutedRide(r));
+    let cleanRides = rides.filter(r =>!isPollutedRide(r) &&!isCommandPhrase(r.from) &&!isCommandPhrase(r.to));
     let seenPhones = new Set();
     cleanRides = cleanRides.filter(r => {
         let p = normalizePhone(r.phone);
@@ -264,7 +270,7 @@ async function sendRidesList(toJid, rides, title, page, timezone) {
         return true;
     });
     if (cleanRides.length === 0) {
-        await sendGupshupMessage(toJid, "No valid rides. Try CLEAR FILTERS");
+        await sendGupshupMessage(toJid, "No valid rides. Try CLEAR");
         return;
     }
     const sortedRides = sortAndTagRides(cleanRides.map(r => r.dataValues || r), timezone);
@@ -273,25 +279,32 @@ async function sendRidesList(toJid, rides, title, page, timezone) {
     const chunk = sortedRides.slice(start, start + PAGE_SIZE);
     const totalPages = Math.ceil(sortedRides.length / PAGE_SIZE);
     if (chunk.length === 0) {
-        await sendGupshupMessage(toJid, "End of list. Type NEXT to start over");
+        await sendGupshupMessage(toJid, "End of list. Type NEXT to restart");
         return;
     }
-    let header = '*' + title.toUpperCase() + ' (' + sortedRides.length + ') P' + (page + 1) + '/' + totalPages + '*\n';
     let lines = [];
     for (let r of chunk) {
-        let from = (r.from || 'Origin').split(',')[0].split(' ')[0].substring(0, 14);
-        let to = (r.to || 'Destination').split(',')[0].split(' ')[0].substring(0, 14);
-        from = from.charAt(0).toUpperCase() + from.slice(1).toLowerCase();
-        to = to.charAt(0).toUpperCase() + to.slice(1).toLowerCase();
+        let from = (r.from || '').split(',')[0].trim().substring(0, 16);
+        let to = (r.to || '').split(',')[0].trim().substring(0, 16);
+        from = from.charAt(0).toUpperCase() + from.slice(1);
+        to = to.charAt(0).toUpperCase() + to.slice(1);
         let rate = '5.0';
-        let cnt = 0;
-        try { let u = await User.getOrCreate(r.phone); rate = (u.rating || 5).toFixed(1); cnt = u.ratingCount || 0; } catch(e) {}
-        let urgentIcon = r.isUrgent? '🔴 ' : '';
-        lines.push(urgentIcon + r.id + '. ' + from + '→' + to + ' • ' + r.countdownStr + ' • ' + rate + '⭐(' + cnt + ')');
+        try { let u = await User.getOrCreate(r.phone); rate = (u.rating || 5).toFixed(1); } catch(e) {}
+        lines.push(`${r.id}. ${from}→${to} • ${r.countdownStr} • ${rate}★`);
     }
-    let footer = "\nReply ID e.g. " + chunk[0].id + "\n";
-    if (totalPages > 1 && page < totalPages - 1) footer += "NEXT for more | FILTER city";
-    else footer += "FILTER city | CLEAR";
+    let header = '';
+    if (sortedRides.length === 1) {
+        header = `${sortedRides.length} ride - reply with ID:\n`;
+    } else {
+        header = `${sortedRides.length} rides - reply with ID - P${page+1}/${totalPages}:\n`;
+    }
+    let firstId = chunk[0].id;
+    let footer = '';
+    if (totalPages > 1 && page < totalPages - 1) {
+        footer = `\nReply with ID e.g. ${firstId} or NEXT`;
+    } else {
+        footer = `\nReply with ID e.g. ${firstId}`;
+    }
     let sess = getSession(toJid);
     sess.ridesList = sortedRides;
     sess.ridesPage = page;
@@ -454,7 +467,7 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             let from = ai.from || draft.from || null;
             let to = ai.to || draft.to || null;
             if (!from && rawText.length >= 3 && rawText.length <= 30) {
-                if (!['online','offline','clear','next','hi','hey','hello','ok','now'].includes(lowerText)) from = rawText;
+                if (!isCommandPhrase(rawText) &&!['online','offline','clear','next','hi','hey','hello','ok','now'].includes(lowerText)) from = rawText;
             }
             if (!from) {
                 currentSess.draft = { role: 'driver' };
@@ -468,7 +481,7 @@ async function handleRideLogic(phoneJid, text, realPhone) {
                     return;
                 }
                 if (draft.from && rawText.length >=3 && rawText.toLowerCase()!== draft.from.toLowerCase()) {
-                    if (!['now','asap'].includes(lowerText)) to = rawText;
+                    if (!['now','asap'].includes(lowerText) &&!isCommandPhrase(rawText)) to = rawText;
                 }
                 if (!to) {
                     currentSess.draft = { role: 'driver', from: from };
@@ -487,10 +500,10 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             u.filterFrom = from;
             await u.save();
             let allRides = await RideRequest.findAll({ where: { status: 'OPEN' } });
-            let matched = allRides.filter(r => { if (isPollutedRide(r)) return false; return areLocationsNearby(from, r.from) || areLocationsNearby(to, r.to); });
+            let matched = allRides.filter(r => { if (isPollutedRide(r) || isCommandPhrase(r.from)) return false; return areLocationsNearby(from, r.from) || areLocationsNearby(to, r.to); });
             let ridesToShow = matched.length > 0? matched : allRides;
-            await sendGupshupMessage(phoneJid, 'ONLINE AS DRIVER: ' + from + ' -> ' + to + ' | Rating: ' + (u.rating||5).toFixed(1) + ' ⭐ (' + (u.ratingCount||0) + ') | ' + ridesToShow.length + ' matching');
-            await sendRidesList(phoneJid, ridesToShow, ridesToShow.length + ' RIDES MATCHING ' + from.toUpperCase() + ' -> ' + to.toUpperCase() + ':', 0, region.timezone);
+            await sendGupshupMessage(phoneJid, `You're online: ${from}→${to} • ${ridesToShow.length} ride${ridesToShow.length!==1?'s':''}`);
+            await sendRidesList(phoneJid, ridesToShow, `${ridesToShow.length} RIDES MATCHING ${from.toUpperCase()} -> ${to.toUpperCase()}:`, 0, region.timezone);
             clearSession(userPhoneKey);
             let s = getSession(userPhoneKey); s.ridesList = ridesToShow;
             return;
@@ -506,7 +519,7 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             if (!from) {
                 if (rawText.length >= 3 && rawText.length <= 30) {
                     if (!['need a ride','want ride','need ride','i need','online','offline','clear','next','hi','hey','hello','thanks','now','asap'].includes(lowerText)) {
-                        if (!getRealTime(rawText, region.timezone)) {
+                        if (!getRealTime(rawText, region.timezone) &&!isCommandPhrase(rawText)) {
                             from = rawText;
                         }
                     }
@@ -517,7 +530,6 @@ async function handleRideLogic(phoneJid, text, realPhone) {
                     return;
                 }
                 currentSess.draft = { role: 'rider', from: from };
-                // If AI also gave to and time in same message, continue, else ask to
                 if (!to) {
                     await sendGupshupMessage(phoneJid, 'Got it, from ' + from + ' -- where to? Example: ' + region.exampleDest);
                     return;
@@ -527,7 +539,7 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             if (!to) {
                 if (rawText.length >= 3 && rawText.length <= 30) {
                     if (rawText.toLowerCase()!== from.toLowerCase()) {
-                        if (!getRealTime(rawText, region.timezone)) {
+                        if (!getRealTime(rawText, region.timezone) &&!isCommandPhrase(rawText)) {
                             to = rawText;
                         }
                     } else {
@@ -573,7 +585,7 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             await sendGupshupMessage(phoneJid, 'RIDE ' + rideReq.id + ' CREATED\n' + rideReq.from + ' -> ' + rideReq.to + ' ' + toDisplayTime(rideReq.time) + ' ' + dispDate + '\nAlerting drivers...');
             var drivers = await User.findAll({ where: { isOnline: true } });
             var filteredDrivers = drivers.filter(d => { if (normalizePhone(d.phone || '') === normKey) return false; return!d.location || areLocationsNearby(d.location, rideReq.from) || areLocationsNearby(d.location, rideReq.to); });
-            for (let d of filteredDrivers) { await sendGupshupMessage(d.phone, 'NEW RIDE MATCH: ' + rideReq.id + '. ' + rideReq.from + ' -> ' + rideReq.to + ' | ' + toDisplayTime(rideReq.time) + ' ' + dispDate + '\nReply ' + rideReq.id); }
+            for (let d of filteredDrivers) { await sendGupshupMessage(d.phone, 'NEW RIDE MATCH: ' + rideReq.id + '. ' + rideReq.from + ' -> ' + rideReq.to + ' | ' + toDisplayTime(rideReq.time) + ' ' + dispDate + '\nReply ' + rideReq.id + ' to take'); }
             clearSession(userPhoneKey);
             return;
         }
@@ -606,9 +618,9 @@ async function handleRideLogic(phoneJid, text, realPhone) {
                 let driverLoc = requestedLoc || u.location || region.defaultCity;
                 await u.setOnline(driverLoc, 2);
                 let allRides = await RideRequest.findAll({ where: { status: 'OPEN' } });
-                let nearby = allRides.filter(r => { if (isPollutedRide(r)) return false; return areLocationsNearby(driverLoc, r.from) || areLocationsNearby(driverLoc, r.to); });
+                let nearby = allRides.filter(r => { if (isPollutedRide(r) || isCommandPhrase(r.from)) return false; return areLocationsNearby(driverLoc, r.from) || areLocationsNearby(driverLoc, r.to); });
                 let displayRides = nearby.length > 0? nearby : allRides;
-                await sendGupshupMessage(phoneJid, 'ONLINE: ' + driverLoc + ' | Rating: ' + (u.rating||5).toFixed(1) + ' ⭐ (' + (u.ratingCount||0) + ')');
+                await sendGupshupMessage(phoneJid, 'ONLINE: ' + driverLoc + ' | Rating: ' + (u.rating||5).toFixed(1) + ' ★ (' + (u.ratingCount||0) + ')');
                 await sendRidesList(phoneJid, displayRides, displayRides.length + ' RIDES NEAR ' + driverLoc.toUpperCase() + ':', 0, region.timezone);
                 return;
             }
