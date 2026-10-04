@@ -59,9 +59,7 @@ function getRealDate(aiDate) {
     const s = aiDate.toString().toLowerCase().trim();
     if (s.includes('day after tomorrow')) { let t = new Date(now); t.setDate(now.getDate()+2); return t.toISOString().split('T')[0]; }
     if (s.includes('tomorrow')) { let t = new Date(now); t.setDate(now.getDate()+1); return t.toISOString().split('T')[0]; }
-    if (s.includes('next week')) {
-        let t = new Date(now); t.setDate(now.getDate()+7); return t.toISOString().split('T')[0];
-    }
+    if (s.includes('next week')) { let t = new Date(now); t.setDate(now.getDate()+7); return t.toISOString().split('T')[0]; }
     if (s.includes('today') || s.includes('now') || s.includes('asap') || s==='null') return now.toISOString().split('T')[0];
     const weekdays = ['monday','tuesday','wednesday','thursday','friday','saturday','sunday'];
     for (let d of weekdays) {
@@ -114,7 +112,7 @@ function toDisplayDate(d) {
     if (d === tomorrow) return 'Tomorrow';
     let date = new Date(d);
     if (isNaN(date.getTime())) return d;
-    return date.toLocaleDateString('en-US',{weekday:'long'}) + ' ' + d;
+    return date.toLocaleDateString('en-US',{weekday:'short'}) + '';
 }
 function getDirectChatLink(jid) {
     let num = jid.split('@')[0].replace(/[^0-9]/g,'');
@@ -157,10 +155,7 @@ async function addRatingToUser(phone, newRating) {
         u.rating = total / u.ratingCount;
         await u.save();
         return u.rating;
-    } catch(e){
-        console.error("Rating save error:", e.message);
-        return 5;
-    }
+    } catch(e){ console.error("Rating save error:", e.message); return 5; }
 }
 function isSimpleLocation(txt) {
     const t = txt.toLowerCase().trim();
@@ -270,20 +265,64 @@ async function sendGupshupMessage(toJid, txt) {
     if (!toJid||!sock) return;
     try { let jid = toJid.includes('@')?toJid:toJid.replace('+','').trim()+'@s.whatsapp.net'; await sock.sendMessage(jid,{text:txt}); } catch(e){console.error(e.message);}
 }
-async function sendRidesList(toJid, rides, title="RIDES:") {
-    if (!rides || rides.length===0) { await sendGupshupMessage(toJid, `${title}\nNo rides now. Stay ONLINE or FILTER`); return; }
-    let firstId = rides[0].id;
-    let lines = [];
-    for (let r of rides.slice(0,10)) {
-        try {
-            let u = await User.getOrCreate(r.phone);
-            let rate = `${(u.rating||5).toFixed(1)}⭐`;
-            lines.push(`#${r.id} ${r.from?.split(',')[0].substring(0,15)} -> ${r.to?.split(',')[0].substring(0,15)} | ${r.seats||1}p | ${toDisplayTime(r.time)} ${r.date? toDisplayDate(r.date):''} | Rider ${rate}`);
-        } catch(e) {
-            lines.push(`#${r.id} ${r.from?.split(',')[0].substring(0,15)} -> ${r.to?.split(',')[0].substring(0,15)} | ${r.seats||1}p | ${toDisplayTime(r.time)}`);
-        }
+// NEW CLEAN PAGINATED LIST - FOR 50 RIDES
+async function sendRidesList(toJid, rides, title="RIDES:", page=0) {
+    if (!rides || rides.length===0) {
+        await sendGupshupMessage(toJid, `${title}\nNo rides now. Stay ONLINE or FILTER`);
+        return;
     }
-    await sendGupshupMessage(toJid, `${title}\n${lines.join('\n')}\n\nReply ${firstId} or TAKE ${firstId} to accept`);
+    // Filter out polluted rides with question words
+    rides = rides.filter(r => {
+        let f = (r.from||'').toLowerCase();
+        let t = (r.to||'').toLowerCase();
+        let bad = ['where','who','what','when','why','how','president','amazon','founder','kenya is','usa'];
+        return!bad.some(b => f.includes(b) || t.includes(b));
+    });
+    if (rides.length===0) {
+        await sendGupshupMessage(toJid, `${title}\nNo clean rides now.`);
+        return;
+    }
+
+    const PAGE_SIZE = 10;
+    const start = page * PAGE_SIZE;
+    const chunk = rides.slice(start, start+PAGE_SIZE);
+    const totalPages = Math.ceil(rides.length / PAGE_SIZE);
+
+    let header = `*${title.toUpperCase()} (${rides.length})*\n`;
+    if (title.includes("NEAR")) header = `*${rides.length} RIDES NEAR JUJA - Page ${page+1}/${totalPages}*\n`;
+    else header = `*${title} - Page ${page+1}/${totalPages}*\n`;
+    header += `--------------------------\n`;
+
+    let lines = [];
+    for (let i=0; i<chunk.length; i++) {
+        let r = chunk[i];
+        let from = (r.from||'Juja').split(',')[0].split(' ')[0].substring(0,12);
+        let to = (r.to||'Thika').split(',')[0].split(' ')[0].substring(0,12);
+        from = from.charAt(0).toUpperCase()+from.slice(1).toLowerCase();
+        to = to.charAt(0).toUpperCase()+to.slice(1).toLowerCase();
+        let time = toDisplayTime(r.time);
+        let date = r.date? toDisplayDate(r.date) : 'Today';
+        // Short date
+        if (date.includes(' ')) date = date.split(' ')[0];
+        let num = start + i + 1;
+        lines.push(`${num}. *#${r.id}* ${from}→${to} | ${time} ${date} | 5.0⭐`);
+    }
+
+    let footer = `--------------------------\n`;
+    footer += `Reply *ID* to take (e.g. ${chunk[0].id})\n`;
+    if (totalPages > 1) {
+        if (page < totalPages-1) footer += `Type *NEXT* for more (${rides.length - (start+PAGE_SIZE)} left)\n`;
+        else footer += `End of list. Type *NEXT* to loop to start\n`;
+    }
+    footer += `*FILTER Juja* or *FILTER Thika*`;
+
+    // Save pagination
+    let sess = getSession(toJid);
+    sess.ridesList = rides;
+    sess.ridesPage = page;
+    sess.lastTitle = title;
+
+    await sendGupshupMessage(toJid, header + lines.join('\n') + '\n' + footer);
 }
 async function checkAndForwardChat(phoneJid, text, realPhone) {
     const userPhoneKey = realPhone || phoneJid;
@@ -306,7 +345,6 @@ async function handleRideLogic(phoneJid, text, realPhone) {
         if (lowerText.length < 2) return;
         const userPhoneKey = realPhone||phoneJid;
 
-        // 1. RATING FIRST
         let ratingSession = getSession(userPhoneKey);
         if (ratingSession && ratingSession.awaitingRating) {
             let rate = parseRating(lowerText);
@@ -328,14 +366,27 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             }
         }
 
-        // 2. HI FIX
         const greetings = ['hi','hey','hello','niaje','mambo','yo','hii','heyy','hi there','hey there','hello there'];
         if (greetings.includes(lowerText)) {
             await sendGupshupMessage(phoneJid, `${getTimeGreeting()}! I'm Bett - I help students with rides.`);
             return;
         }
 
-        // 3. END RIDE FIX - catches "end this ride"
+        // PAGINATION COMMAND
+        if (lowerText==='next' || lowerText==='more' || lowerText==='next page') {
+            let s = getSession(userPhoneKey);
+            if (s.ridesList && s.ridesList.length>0) {
+                let nextPage = (s.ridesPage||0)+1;
+                let totalPages = Math.ceil(s.ridesList.length/10);
+                if (nextPage >= totalPages) nextPage = 0;
+                await sendRidesList(phoneJid, s.ridesList, s.lastTitle||'RIDES:', nextPage);
+                return;
+            } else {
+                await sendGupshupMessage(phoneJid, `No list active. Say ONLINE to see rides.`);
+                return;
+            }
+        }
+
         if (/(end|close|finish|complete).*(ride|trip)/i.test(lowerText) || ['done','finished','complete','trip done','end ride','end trip'].includes(lowerText)) {
             let rideToRate = null;
             try {
@@ -344,9 +395,7 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             } catch(e){}
             let otherPhone = null;
             if (activeChats[userPhoneKey]) otherPhone = activeChats[userPhoneKey].with;
-            else if (rideToRate) {
-                otherPhone = rideToRate.phone === userPhoneKey? rideToRate.driverPhone : rideToRate.phone;
-            }
+            else if (rideToRate) { otherPhone = rideToRate.phone === userPhoneKey? rideToRate.driverPhone : rideToRate.phone; }
             killChatFor(userPhoneKey);
             clearSession(userPhoneKey);
             if (rideToRate && otherPhone) {
@@ -435,12 +484,15 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             let nearby = await RideRequest.getNearby(u.location);
             await sendGupshupMessage(phoneJid, `ONLINE: ${u.location} | ${(u.rating||5).toFixed(1)}⭐`);
             await sendRidesList(phoneJid, nearby, `${nearby.length} RIDES NEAR ${u.location.toUpperCase()}:`);
-            clearSession(userPhoneKey); return;
+            clearSession(userPhoneKey);
+            // restore session rides list after clear
+            let s = getSession(userPhoneKey); s.ridesList = nearby; s.ridesPage=0; s.lastTitle=`${nearby.length} RIDES NEAR ${u.location.toUpperCase()}:`;
+            return;
         }
         if (lowerText.includes('see all') || lowerText.includes('available rides') || lowerText.includes('show requests')) {
             let nearby = await RideRequest.getNearby("Juja");
             await sendRidesList(phoneJid, nearby, `${nearby.length} RIDES IN JUJA:`);
-            clearSession(userPhoneKey); return;
+            return;
         }
         if (lowerText.includes('my rating') || lowerText==='rating' || lowerText==='my ratings' || lowerText==='ratings' || lowerText==='my rate') {
             let u = await User.getOrCreate(userPhoneKey);
@@ -497,6 +549,16 @@ async function handleRideLogic(phoneJid, text, realPhone) {
         }
         var ai = await parseWithAI(text, session2.draft);
         if (ai.role==='rider' && ai.from && ai.to) {
+            // ANTI-POLLUTION: block questions becoming rides
+            let badWords = ['where','who','what','when','why','how','president','kenya is','usa is','amazon','founder','capital','okay'];
+            let fl = ai.from.toLowerCase();
+            let tl = ai.to.toLowerCase();
+            if (badWords.some(w=> fl.includes(w) || tl.includes(w)) || fl.length>20 || tl.length>20) {
+                let reply = await answerGeneralQuestion(text, user2.location||session2.draft.from||"Juja");
+                if (!reply) reply = `${getTimeGreeting()}! I'm Bett — I help students with rides.`;
+                await sendGupshupMessage(phoneJid, reply);
+                return;
+            }
             session2.draft.from = ai.from;
             session2.draft.to = ai.to;
             session2.draft.role='rider';
