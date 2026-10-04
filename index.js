@@ -1,4 +1,4 @@
-require('dotenv').config();
+Require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const fs = require('fs');
@@ -198,8 +198,8 @@ async function parseWithAI(msg, contextDraft = {}) {
     var apiKey = process.env.GROQ_API_KEY;
     if (!apiKey) throw new Error("GROQ_API_KEY missing in .env");
 
-    // Correct active Groq model identifiers
-    var models = ["llama3-70b-8192", "llama-3.1-8b-instant"];
+    // Active, production-ready Groq model IDs with automatic fallback sequence
+    var models = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "llama-3.2-3b-preview"];
 
     for (var i = 0; i < models.length; i++) {
         try {
@@ -227,7 +227,8 @@ async function parseWithAI(msg, contextDraft = {}) {
             if (data.date) data.date = getRealDate(data.date);
             return data;
         } catch (err) {
-            console.error(`Groq API [${models[i]}] Error:`, err.response ? err.response.data : err.message);
+            var errMsg = err.response && err.response.data && err.response.data.error ? err.response.data.error.message : err.message;
+            console.warn(`Groq API [${models[i]}] Failed: ${errMsg}. Trying fallback model...`);
             if (i === models.length - 1) throw err;
         }
     }
