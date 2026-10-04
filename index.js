@@ -20,7 +20,6 @@ const userSessions = {};
 const activeChats = {};
 const ratingSessions = {};
 
-// --- DYNAMIC REGION & TIMEZONE DETECTION ---
 function detectUserRegion(jid) {
     const rawDigits = (jid || '').split('@')[0].replace(/[^0-9]/g, '');
     if (rawDigits.startsWith('1') || (rawDigits.length === 10 &&!rawDigits.startsWith('0'))) {
@@ -360,7 +359,7 @@ async function parseWithAI(msg, region, contextDraft) {
     }
 }
 
-// --- MAIN LOGIC WITH FALLBACK FIX ---
+// FIXED MAIN LOGIC - NO MORE Juja->Juja
 async function handleRideLogic(phoneJid, text, realPhone) {
     try {
         const lowerText = text.toLowerCase().trim();
@@ -430,21 +429,13 @@ async function handleRideLogic(phoneJid, text, realPhone) {
         let currentSess = getSession(userPhoneKey);
         let ai = await parseWithAI(text, region, currentSess.draft || {});
 
-        // --- DRIVER WITH FALLBACK ---
         if (ai.role === 'driver') {
             let draft = currentSess.draft || {};
-            // FALLBACK: use raw text as location if AI missed it
-            let from = ai.from || draft.from;
-            if (!from && rawText.length >= 3 && rawText.length <= 30 &&!['online','offline','clear','next','hey','hi','hello','ok'].includes(lowerText)) {
-                from = rawText;
-            }
-            let to = ai.to || draft.to;
-            // If draft already has from, and user sends new word, treat as to
-            if (draft.from &&!ai.to &&!to && rawText.toLowerCase()!== draft.from.toLowerCase() && rawText.length >=3) {
-                if (!['kericho','juja','ruiru','thika','nairobi','denton','dallas','frisco'].includes(lowerText) || true) {
-                    // Only if from exists, raw is to
-                    if (from && draft.from) to = rawText;
-                }
+            let from = ai.from || draft.from || null;
+            let to = ai.to || draft.to || null;
+
+            if (!from && rawText.length >= 3 && rawText.length <= 30) {
+                if (!['online','offline','clear','next','hi','hey','hello','ok','now'].includes(lowerText)) from = rawText;
             }
 
             if (!from) {
@@ -454,8 +445,23 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             }
             currentSess.draft.from = from;
             if (from &&!to) {
-                currentSess.draft = { role: 'driver', from: from };
-                await sendGupshupMessage(phoneJid, 'Got it, driving from ' + from + ' -- where to? Example: ' + region.exampleDest);
+                // If user sent same city again, don't accept as to
+                if (draft.from && rawText.toLowerCase() === draft.from.toLowerCase() &&!ai.to) {
+                    await sendGupshupMessage(phoneJid, 'You are already at ' + from + '. Where to? Example: ' + region.exampleDest);
+                    return;
+                }
+                if (draft.from && rawText.length >=3 && rawText.toLowerCase()!== draft.from.toLowerCase()) {
+                    if (!['now','asap'].includes(lowerText)) to = rawText;
+                }
+                if (!to) {
+                    currentSess.draft = { role: 'driver', from: from };
+                    await sendGupshupMessage(phoneJid, 'Got it, driving from ' + from + ' -- where to? Example: ' + region.exampleDest);
+                    return;
+                }
+            }
+            if (from && to && from.toLowerCase() === to.toLowerCase()) {
+                await sendGupshupMessage(phoneJid, 'From and to can\'t be same (' + from + '). Where are you driving to? Example: ' + region.exampleDest);
+                currentSess.draft.to = null;
                 return;
             }
             currentSess.draft.to = to;
@@ -473,49 +479,77 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             return;
         }
 
-        // --- RIDER WITH FALLBACK - FIXES YOUR SCREENSHOT LOOP ---
         if (ai.role === 'rider') {
             let draft = currentSess.draft || {};
-            let from = ai.from || draft.from;
-            let to = ai.to || draft.to;
-            let time = ai.time || draft.time;
+            let from = ai.from || draft.from || null;
+            let to = ai.to || draft.to || null;
+            let time = ai.time || draft.time || null;
             let date = ai.date || draft.date || getRealDate('today', region.timezone);
 
-            // CRITICAL FALLBACK: If AI returns null but user typed a place like Kericho/Juja, use it
-            if (!from && rawText.length >= 3 && rawText.length <= 30) {
-                const blacklist = ['need a ride','want ride','need ride','i need','online','offline','clear','next','hi','hey','hello','thanks'];
-                if (!blacklist.some(b => lowerText.includes(b))) {
-                    from = rawText;
-                }
-            }
-            if (from &&!to && draft.from) {
-                // Second message after from is to
-                if (rawText.toLowerCase()!== draft.from.toLowerCase() && rawText.length >=3 && rawText.length <=30) {
-                    const blacklist2 = ['now','asap','morning','afternoon','evening','today','tomorrow'];
-                    if (!blacklist2.includes(lowerText)) {
-                        to = rawText;
+            // STEP 1: FROM
+            if (!from) {
+                if (rawText.length >= 3 && rawText.length <= 30) {
+                    if (!['need a ride','want ride','need ride','i need','online','offline','clear','next','hi','hey','hello','thanks','now','asap'].includes(lowerText)) {
+                        from = rawText;
                     }
                 }
-            }
-
-            if (!from) {
-                currentSess.draft = { role: 'rider' };
-                await sendGupshupMessage(phoneJid, 'Where are you riding from? Example: ' + region.examplePlaces);
-                return;
-            }
-            currentSess.draft.from = from;
-            if (from &&!to) {
+                if (!from) {
+                    currentSess.draft = { role: 'rider' };
+                    await sendGupshupMessage(phoneJid, 'Where are you riding from? Example: ' + region.examplePlaces);
+                    return;
+                }
                 currentSess.draft = { role: 'rider', from: from };
                 await sendGupshupMessage(phoneJid, 'Got it, from ' + from + ' -- where to? Example: ' + region.exampleDest);
                 return;
             }
-            currentSess.draft.to = to;
-            if (from && to &&!time) {
+
+            // STEP 2: TO - must be different from FROM
+            if (!to) {
+                if (rawText.length >= 3 && rawText.length <= 30) {
+                    if (rawText.toLowerCase()!== from.toLowerCase()) {
+                        if (!['now','asap','flexible','today','tomorrow','morning','afternoon','evening','tonight','9 am','9am'].includes(lowerText)) {
+                            to = rawText;
+                        }
+                    } else {
+                        await sendGupshupMessage(phoneJid, 'From and to can\'t be same. You are at ' + from + ', where do you want to go? Example: ' + region.exampleDest);
+                        return;
+                    }
+                }
+                if (!to) {
+                    await sendGupshupMessage(phoneJid, 'Got it, from ' + from + ' -- where to? Example: ' + region.exampleDest);
+                    return;
+                }
+                // Final check: block same city
+                if (from.toLowerCase() === to.toLowerCase()) {
+                    await sendGupshupMessage(phoneJid, 'From and to can\'t be same (' + from + '). Where to? Example: ' + region.exampleDest);
+                    return;
+                }
                 currentSess.draft = { role: 'rider', from: from, to: to, date: date };
                 await sendGupshupMessage(phoneJid, 'Got it, ' + from + ' -> ' + to + '. What time? Reply Now or 9 AM');
                 return;
             }
-            currentSess.draft.time = time;
+
+            // STEP 3: TIME - handle Now correctly
+            if (!time) {
+                if (['now','asap','flexible'].includes(lowerText) || lowerText.match(/\d{1,2}(:\d{2})?\s*(am|pm)?/)) {
+                    time = getRealTime(rawText, region.timezone);
+                } else {
+                    time = getRealTime(rawText, region.timezone);
+                    // If still not time, ask again
+                    if (ai.role!== 'rider' &&!lowerText.match(/now|asap|\d/)) {
+                        await sendGupshupMessage(phoneJid, 'What time? Reply Now or 9 AM for ' + from + ' -> ' + to);
+                        return;
+                    }
+                }
+            }
+
+            // Prevent same from/to at creation
+            if (from.toLowerCase() === to.toLowerCase()) {
+                await sendGupshupMessage(phoneJid, 'From and to can\'t be same (' + from + '). Where to?');
+                currentSess.draft.to = null;
+                return;
+            }
+
             let rideReq = await RideRequest.createCustom(userPhoneKey, { from, to, time, date });
             let dispDate = toDisplayDate(date, region.timezone);
             await sendGupshupMessage(phoneJid, 'RIDE ' + rideReq.id + ' CREATED\n' + rideReq.from + ' -> ' + rideReq.to + ' ' + toDisplayTime(rideReq.time) + ' ' + dispDate + '\nAlerting drivers...');
