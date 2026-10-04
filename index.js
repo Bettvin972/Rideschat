@@ -42,13 +42,52 @@ function getTimeGreeting() {
     if (h >= 15 && h < 19) return "Good evening";
     return "Hello";
 }
-function getRealDate(aiDate) {
+function getNextWeekday(targetDay) {
     const now = getNairobiNow();
-    if (!aiDate) return now.toISOString().split('T')[0];
-    const s = aiDate.toString().toLowerCase();
-    if (['today','now','null','asap'].includes(s)) return now.toISOString().split('T')[0];
-    if (['tomorrow'].includes(s)) { let t = new Date(now); t.setDate(now.getDate()+1); return t.toISOString().split('T')[0]; }
-    return aiDate;
+    const days = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
+    let target = days.indexOf(targetDay.toLowerCase());
+    if (target === -1) return null;
+    let result = new Date(now);
+    let diff = target - now.getDay();
+    if (diff <= 0) diff += 7; // next week
+    result.setDate(now.getDate() + diff);
+    return result.toISOString().split('T')[0];
+}
+function getRealDate(aiDate) {
+    if (!aiDate) return getNairobiNow().toISOString().split('T')[0];
+    const now = getNairobiNow();
+    const s = aiDate.toString().toLowerCase().trim();
+
+    if (s.includes('day after tomorrow')) {
+        let t = new Date(now); t.setDate(now.getDate()+2); return t.toISOString().split('T')[0];
+    }
+    if (s.includes('tomorrow')) {
+        let t = new Date(now); t.setDate(now.getDate()+1); return t.toISOString().split('T')[0];
+    }
+    if (s.includes('today') || s.includes('now') || s.includes('asap') || s==='null') {
+        return now.toISOString().split('T')[0];
+    }
+    // weekdays
+    const weekdays = ['monday','tuesday','wednesday','thursday','friday','saturday','sunday'];
+    for (let d of weekdays) {
+        if (s.includes(d)) {
+            // if says "this friday" and today is before friday, use this week, else next week
+            if (s.includes('this')) {
+                let target = weekdays.indexOf(d);
+                let today = now.getDay(); // 0=Sun
+                let jsTarget = target === 6? 0 : target+1; // convert mon=0 to js
+                // simplified: just use next occurrence if "this" is past, today otherwise
+                let diff = jsTarget - today;
+                if (diff < 0) diff += 7;
+                let result = new Date(now); result.setDate(now.getDate()+diff);
+                return result.toISOString().split('T')[0];
+            }
+            return getNextWeekday(d);
+        }
+    }
+    // if already YYYY-MM-DD
+    if (s.match(/^\d{4}-\d{2}-\d{2}$/)) return s;
+    return s;
 }
 function getRealTime(aiTime) {
     const now = getNairobiNow();
@@ -68,6 +107,17 @@ function toDisplayTime(t) {
     let ap = h>=12?'PM':'AM'; let hh = h%12||12;
     return `${hh}:${String(m||0).padStart(2,'0')} ${ap}`;
 }
+function toDisplayDate(d) {
+    const now = getNairobiNow();
+    const today = now.toISOString().split('T')[0];
+    let tom = new Date(now); tom.setDate(now.getDate()+1);
+    const tomorrow = tom.toISOString().split('T')[0];
+    if (d === today) return 'Today';
+    if (d === tomorrow) return 'Tomorrow';
+    // Show weekday
+    let date = new Date(d);
+    return date.toLocaleDateString('en-US',{weekday:'long'}) + ' ' + d;
+}
 function getDirectChatLink(jid) {
     let num = jid.split('@')[0].replace(/[^0-9]/g,'');
     if (num.startsWith('0')) num='254'+num.slice(1);
@@ -78,24 +128,31 @@ function parseTimeQuick(input) {
     if (!input) return null;
     let t = input.toLowerCase().trim();
     const now = getNairobiNow();
+    // Find time anywhere: "tomorrow at 6 pm", "friday 9am", "10:30 pm tomorrow"
+    let m = t.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)/);
+    if (m) {
+        let h=parseInt(m[1]); let min=parseInt(m[2]||'0'); let ap=m[3];
+        if(ap==='pm'&&h<12)h+=12; if(ap==='am'&&h===12)h=0;
+        return `${String(h).padStart(2,'0')}:${String(min).padStart(2,'0')}`;
+    }
+    let m2 = t.match(/(\d{1,2}):(\d{2})/);
+    if (m2) return `${String(parseInt(m2[1])).padStart(2,'0')}:${String(parseInt(m2[2])).padStart(2,'0')}`;
     if (['now','asap'].includes(t)) return `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
     if (t==='tomorrow') return '09:00';
-    let m = t.match(/^(\d{1,2})(\s*(am|pm))?$/);
-    if (m) { let h=parseInt(m[1]); let ap=m[3]; if(ap==='pm'&&h<12)h+=12; if(ap==='am'&&h===12)h=0; return `${String(h).padStart(2,'0')}:00`; }
-    let m2 = t.match(/(\d{1,2}):(\d{2})(\s*(am|pm))?/);
-    if (m2) { let h=parseInt(m2[1]); let min=parseInt(m2[2]); let ap=m2[4]; if(ap==='pm'&&h<12)h+=12; if(ap==='am'&&h===12)h=0; return `${String(h).padStart(2,'0')}:${String(min).padStart(2,'0')}`; }
+    // If input is just a weekday without time, default to 9 AM
+    const weekdays = ['monday','tuesday','wednesday','thursday','friday','saturday','sunday'];
+    if (weekdays.some(d=>t.includes(d)) &&!t.match(/\d/)) return '09:00';
     return null;
 }
 function isSimpleLocation(txt) {
     const t = txt.toLowerCase().trim();
     const exactBlock = ['hi','hey','hello','need','ride','offer','driver','car','online','offline','filter','clear','next','now','today','tomorrow','thanks','thank','thank you','ok','okay','yes','yeah','yep','cool','thx','available','requests','show','all','see','my','trip','accept','take','end ride','who are you','what are you','help','what can you do','how does it work','what is','who is','where is','how can','how to','rate','rating','need a ride','need ride','i need a ride'];
     if (exactBlock.includes(t)) return false;
-    if (t.includes('how can i') || t.includes('need a ride to') || t.length > 30) return false;
-    if (t.length < 3 || t.length > 30) return false;
+    if (t.includes('how can i') || t.includes('need a ride to') || t.length > 35) return false;
+    if (t.length < 3 || t.length > 35) return false;
     if (/^\d+$/.test(t)) return false;
-    if (parseTimeQuick(t)) return false;
     if (!/^[a-zA-Z\s]+$/.test(t)) return false;
-    if (t.split(' ').length > 3) return false;
+    if (t.split(' ').length > 4) return false;
     return true;
 }
 async function startWhatsApp() {
@@ -140,11 +197,12 @@ async function startWhatsApp() {
 startWhatsApp();
 var SYSTEM_PROMPT = `You are Bett, a student ride-sharing assistant in Kenya. Current: {TODAY_INFO} [{TODAY_DATE}] {GREETING}. Draft: {CONTEXT_DRAFT}
 Classify:
-1. CHITCHAT: Hi, Who are you, What can you do, Help, How does it work, What is a baboon, Where is Kenya parliament -> {"role":"chat"}
-2. RIDE: Extract from/to/date/time - "from Juja to Thika now", "Juja to Thika at 9am today", "need a ride to Thika", "Makongeni to Thika" -> {"role":"rider", from, to}
+1. CHITCHAT: Hi, Who are you, What can you do, Help, How does it work -> {"role":"chat"}
+2. RIDE: Extract from/to/date/time - "from Juja to Thika now", "Juja to Thika at 9am tomorrow", "Friday to Thika", "Isiolo to Kangemi tomorrow at 6 pm", "Need ride Monday 8am" -> {"role":"rider", from, to, date, time}
+   date can be: today, tomorrow, monday, tuesday, wednesday, thursday, friday, saturday, sunday
 3. COMMAND: TAKE 1, ONLINE, OFFLINE, FILTER Juja, CLEAR FILTERS -> {"role":"command"}
 Return ONLY JSON:
-{"role":"rider|driver|command|chat","command":"ONLINE|OFFLINE|SHOW_REQUESTS|TAKE|FILTER|CLEAR_FILTERS|NEXT|null","filter":string|null,"takeId":number|null,"from":string|null,"to":string|null,"date":"today|tomorrow|null","time":"HH:MM|now|null","seats":number|null}
+{"role":"rider|driver|command|chat","command":"ONLINE|OFFLINE|SHOW_REQUESTS|TAKE|FILTER|CLEAR_FILTERS|NEXT|null","filter":string|null,"takeId":number|null,"from":string|null,"to":string|null,"date":"today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|null","time":"HH:MM|now|null","seats":number|null}
 `;
 async function parseWithAI(msg, contextDraft={}) {
     var now = getNairobiNow();
@@ -166,39 +224,24 @@ async function parseWithAI(msg, contextDraft={}) {
         } catch(e) { if (i===models.length-1) throw e; }
     }
 }
-// FIXED: No more "Just say Need a ride from Juja to Thika now" spam
 async function answerGeneralQuestion(q, loc="Juja") {
     const lower = q.toLowerCase().trim();
     if (!lower || lower.length <= 2) return null;
     if (/^\d+$/.test(lower)) return null;
-
-    if (['thanks','thank you','thankyou','asante','asante sana','thx'].includes(lower)) {
-        return "You're welcome!";
-    }
-    if (['ok','okay','sawa','poa','cool','nice','great','alright'].includes(lower)) {
-        return "Got it!";
-    }
-    if (['hi','hey','hello'].includes(lower)) {
-        return `${getTimeGreeting()}! I'm Bett - I help students with rides.`;
-    }
-    if (lower.includes('who are you') || lower.includes('what are you')) {
-        return "I'm Bett! I help students in Kenya connect with affordable rides.";
-    }
-    if (lower.includes('help') || lower.includes('what can you do') || lower.includes('how does it work')) {
-        return "I'm Bett! I connect students with drivers. Need a ride? Tell me where from and where to. Driver? Say Online.";
-    }
-
+    if (['thanks','thank you','thankyou','asante','asante sana','thx'].includes(lower)) return "You're welcome!";
+    if (['ok','okay','sawa','poa','cool','nice','great','alright'].includes(lower)) return "Got it!";
+    if (['hi','hey','hello'].includes(lower)) return `${getTimeGreeting()}! I'm Bett - I help students with rides.`;
+    if (lower.includes('who are you') || lower.includes('what are you')) return "I'm Bett! I help students in Kenya connect with affordable rides.";
+    if (lower.includes('help') || lower.includes('what can you do') || lower.includes('how does it work')) return "I'm Bett! I connect students with drivers. Need a ride? Tell me where from and where to. Driver? Say Online.";
     try {
-        let sys = `You are Bett, student ride assistant. Rules: Respond in English only, 1 short sentence max, NO example like "Juja to Thika", NO emoji, NO "Just say Need a ride", NO "I'll link you with a driver". Be brief and helpful.`;
+        let sys = `You are Bett, student ride assistant. Rules: Respond in English only, 1 short sentence max, NO example like "Juja to Thika", NO emoji. Be brief.`;
         const res = await axios.post("https://api.groq.com/openai/v1/chat/completions", {
             model: "openai/gpt-oss-20b",
             messages: [{role:"system",content:sys},{role:"user",content:q}],
             temperature:0.5, max_tokens: 60
         }, { headers:{ "Authorization":`Bearer ${process.env.GROQ_API_KEY}` } });
         return res.data.choices[0].message.content.trim();
-    } catch(e) {
-        return "I'm Bett - I help students with rides.";
-    }
+    } catch(e) { return "I'm Bett - I help students with rides."; }
 }
 async function sendGupshupMessage(toJid, txt) {
     if (!toJid||!sock) return;
@@ -207,7 +250,7 @@ async function sendGupshupMessage(toJid, txt) {
 async function sendRidesList(toJid, rides, title="RIDES:") {
     if (!rides || rides.length===0) { await sendGupshupMessage(toJid, `${title}\nNo rides now. Stay ONLINE or FILTER`); return; }
     let firstId = rides[0].id;
-    let list = rides.slice(0,10).map(r => `#${r.id} ${r.from?.split(',')[0].substring(0,15)} -> ${r.to?.split(',')[0].substring(0,15)} | ${r.seats||1}p | ${toDisplayTime(r.time)}`).join('\n');
+    let list = rides.slice(0,10).map(r => `#${r.id} ${r.from?.split(',')[0].substring(0,15)} -> ${r.to?.split(',')[0].substring(0,15)} | ${r.seats||1}p | ${toDisplayTime(r.time)} ${r.date? toDisplayDate(r.date):''}`).join('\n');
     await sendGupshupMessage(toJid, `${title}\n${list}\n\nReply ${firstId} or TAKE ${firstId} to accept`);
 }
 async function checkAndForwardChat(phoneJid, text, realPhone) {
@@ -282,7 +325,7 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             }
             if (session.draft.from &&!session.draft.to) {
                 session.draft.to = text.trim();
-                await sendGupshupMessage(phoneJid, `Got it, ${session.draft.from} → ${session.draft.to}. What time? Reply Now or 9 AM`);
+                await sendGupshupMessage(phoneJid, `Got it, ${session.draft.from} → ${session.draft.to}. What time? Reply Now or Tomorrow 6 PM or Friday 9 AM`);
                 return;
             }
         }
@@ -343,17 +386,20 @@ async function handleRideLogic(phoneJid, text, realPhone) {
         var session2 = getSession(userPhoneKey);
         if (session2.draft.from && session2.draft.to &&!session2.draft.time) {
             let qt = parseTimeQuick(lowerText);
-            if (qt) {
-                session2.draft.time = qt; session2.draft.date = getRealDate('today');
-                await sendGupshupMessage(phoneJid, `Perfect, ${session2.draft.from} → ${session2.draft.to} at ${toDisplayTime(qt)} — creating...`);
+            let qd = getRealDate(lowerText);
+            if (qt || qd!== getNairobiNow().toISOString().split('T')[0] || lowerText.includes('tomorrow') || ['monday','tuesday','wednesday','thursday','friday','saturday','sunday'].some(d=>lowerText.includes(d))) {
+                if (qt) session2.draft.time = qt; else session2.draft.time = '09:00';
+                session2.draft.date = qd;
+                let displayDate = toDisplayDate(qd);
+                await sendGupshupMessage(phoneJid, `Perfect, ${session2.draft.from} → ${session2.draft.to} at ${toDisplayTime(session2.draft.time)} ${displayDate} — creating...`);
                 var rr = await RideRequest.createCustom(userPhoneKey, session2.draft);
-                await sendGupshupMessage(phoneJid, `RIDE #${rr.id} CREATED\n${rr.from} → ${rr.to} at ${toDisplayTime(rr.time)} Today\nAlerting drivers...`);
+                await sendGupshupMessage(phoneJid, `RIDE #${rr.id} CREATED\n${rr.from} → ${rr.to} at ${toDisplayTime(rr.time)} ${displayDate}\nAlerting drivers...`);
                 var drvs = await User.getOnlineNearby(rr.from);
                 var clean = userPhoneKey.split('@')[0].replace(/[^0-9]/g,'');
                 var filtered = drvs.filter(d=>{var dc=(d.phone||'').split('@')[0].replace(/[^0-9]/g,''); return dc!==clean;});
-                for (let d of filtered) await sendGupshupMessage(d.phone, `#${rr.id} ${rr.from} → ${rr.to} | ${toDisplayTime(rr.time)}\nReply ${rr.id} or TAKE ${rr.id}`);
+                for (let d of filtered) await sendGupshupMessage(d.phone, `#${rr.id} ${rr.from} → ${rr.to} | ${toDisplayTime(rr.time)} ${displayDate}\nReply ${rr.id} or TAKE ${rr.id}`);
                 clearSession(userPhoneKey); return;
-            } else { await sendGupshupMessage(phoneJid, `What time? Reply Now or 9 AM`); return; }
+            } else { await sendGupshupMessage(phoneJid, `What time? Reply Now or Tomorrow 6 PM or Friday 9 AM`); return; }
         }
         var ai = await parseWithAI(text, session2.draft);
         if (ai.role==='rider' && ai.from && ai.to) {
@@ -363,15 +409,16 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             session2.draft.date = getRealDate(ai.date||'today');
             session2.draft.time = getRealTime(ai.time||'now');
             if (!session2.draft.time || session2.draft.time==='Flexible') {
-                await sendGupshupMessage(phoneJid, `Got it, ${session2.draft.from} → ${session2.draft.to}. What time? Reply Now or 9 AM`);
+                await sendGupshupMessage(phoneJid, `Got it, ${session2.draft.from} → ${session2.draft.to}. What time? Reply Now or Tomorrow 6 PM or Friday 9 AM`);
                 return;
             }
             var rideReq = await RideRequest.createCustom(userPhoneKey, session2.draft);
-            await sendGupshupMessage(phoneJid, `RIDE #${rideReq.id} CREATED\n${rideReq.from} → ${rideReq.to} ${toDisplayTime(rideReq.time)} Today\nAlerting drivers...`);
+            let dispDate = toDisplayDate(session2.draft.date);
+            await sendGupshupMessage(phoneJid, `RIDE #${rideReq.id} CREATED\n${rideReq.from} → ${rideReq.to} ${toDisplayTime(rideReq.time)} ${dispDate}\nAlerting drivers...`);
             var drivers = await User.getOnlineNearby(rideReq.from);
             var clean = userPhoneKey.split('@')[0].replace(/[^0-9]/g,'');
             var f = drivers.filter(d=>{var dc=(d.phone||'').split('@')[0].replace(/[^0-9]/g,''); return dc!==clean;});
-            for (let d of f) await sendGupshupMessage(d.phone, `#${rideReq.id} ${rideReq.from} → ${rideReq.to} | ${toDisplayTime(rideReq.time)}\nReply ${rideReq.id}`);
+            for (let d of f) await sendGupshupMessage(d.phone, `#${rideReq.id} ${rideReq.from} → ${rideReq.to} | ${toDisplayTime(rideReq.time)} ${dispDate}\nReply ${rideReq.id}`);
             clearSession(userPhoneKey); return;
         }
         if (ai.role==='chat') {
@@ -399,10 +446,10 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             else await sendGupshupMessage(phoneJid, `Okay, from ${session2.draft.from} — where to?`);
             return;
         }
-        if (session2.draft.role==='rider' &&!session2.draft.time) { await sendGupshupMessage(phoneJid, `What time? Now or 9 AM?`); return; }
+        if (session2.draft.role==='rider' &&!session2.draft.time) { await sendGupshupMessage(phoneJid, `What time? Reply Now or Tomorrow 6 PM or Friday 9 AM`); return; }
         if (session2.draft.role==='rider') {
             var rideReq2 = await RideRequest.createCustom(userPhoneKey, session2.draft);
-            await sendGupshupMessage(phoneJid, `RIDE #${rideReq2.id} CREATED\n${rideReq2.from} → ${rideReq2.to} ${toDisplayTime(rideReq2.time)}`);
+            await sendGupshupMessage(phoneJid, `RIDE #${rideReq2.id} CREATED\n${rideReq2.from} → ${rideReq2.to} ${toDisplayTime(rideReq2.time)} ${toDisplayDate(rideReq2.date)}`);
             var drivers2 = await User.getOnlineNearby(rideReq2.from);
             var clean2 = userPhoneKey.split('@')[0].replace(/[^0-9]/g,'');
             var f2 = drivers2.filter(d=>{var dc=(d.phone||'').split('@')[0].replace(/[^0-9]/g,''); return dc!==clean2;});
