@@ -94,43 +94,64 @@ process.on('unhandledRejection', (reason) => { const msg = reason?.message || St
 
 function getRealDate(aiDate) {
     const now = new Date();
-    if (!aiDate || aiDate.toLowerCase() === 'today' || aiDate.toLowerCase() === 'now' || aiDate === 'null') return now.toISOString().split('T')[0];
-    if (aiDate.toLowerCase() === 'tomorrow') { var t = new Date(); t.setDate(now.getDate() + 1); return t.toISOString().split('T')[0]; }
+    if (!aiDate) return now.toISOString().split('T')[0];
+    const str = aiDate.toString().toLowerCase();
+    if (str === 'today' || str === 'now' || str === 'null' || str === 'asap' || str === 'immediately') return now.toISOString().split('T')[0];
+    if (str === 'tomorrow') { var t = new Date(); t.setDate(now.getDate() + 1); return t.toISOString().split('T')[0]; }
     var days = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
-    if (days.includes(aiDate.toLowerCase())) {
-        var target = days.indexOf(aiDate.toLowerCase());
+    if (days.includes(str)) {
+        var target = days.indexOf(str);
         var diff = (target - now.getDay() + 7) % 7; if (diff === 0) diff = 7;
         var d = new Date(); d.setDate(now.getDate() + diff); return d.toISOString().split('T')[0];
     }
     return aiDate;
 }
-function cleanContactNumber(jid) {
-    if (!jid) return "📱 _Contact via Bot_";
-    if (jid.includes('@lid')) return "📱 *Direct Connection via Bot*";
-    const cleanNum = jid.split('@')[0].replace(/[^0-9]/g, '');
-    return cleanNum? `https://wa.me/${cleanNum}` : "📱 *Direct Connection via Bot*";
+
+function getRealTime(aiTime) {
+    if (!aiTime) return null;
+    let lower = aiTime.toString().toLowerCase().trim();
+    if (['now','asap','immediately','sasa','now now','right now','right away'].includes(lower)) {
+        const now = new Date();
+        return `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+    }
+    let m = lower.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/);
+    if (m) {
+        let h = parseInt(m[1]); let min = parseInt(m[2] || '0'); let ap = m[3];
+        if (ap === 'pm' && h < 12) h += 12;
+        if (ap === 'am' && h === 12) h = 0;
+        if (h >= 0 && h <= 23) return `${String(h).padStart(2,'0')}:${String(min).padStart(2,'0')}`;
+    }
+    return aiTime;
 }
 
-// ✅ NEW SMART PROMPT - handles greetings + general Qs + rides
-var SYSTEM_PROMPT = `You are Rideschat Kenya, friendly WhatsApp assistant. Current: {TODAY_INFO} [{TODAY_DATE}]. Draft: {CONTEXT_DRAFT}
+function cleanContactNumber(jid) {
+    if (!jid) return "📱 _Contact via Bot_";
+    let num = jid.split('@')[0].replace(/[^0-9]/g, '');
+    if (num.length < 9) return "📱 *Reply here - Bot will link you*";
+    if (num.startsWith('0')) num = '254' + num.slice(1);
+    if (!num.startsWith('254') && num.length === 9) num = '254' + num;
+    return `https://wa.me/${num}`;
+}
 
-Classify message into JSON:
+// ✅ FIXED PROMPT - now understands "now" as time
+var SYSTEM_PROMPT = `You are Rideschat Kenya assistant. Current: {TODAY_INFO} [{TODAY_DATE}]. Draft: {CONTEXT_DRAFT}
 
-1. GREETING: "Hi","Sasa","Mambo","Niaje","Hello","Hey","Sasa bro","Poa"
--> {"role":"chat","reply":"👋 Sasa! Karibu Rideschat Kenya 🇰🇪\\n\\nI help riders & drivers connect.\\n\\nJust say: 'Need ride FROM to TO at TIME'\\nEg: 'Need ride Juja to Thika tomorrow 9am'\\n\\nOr ask: 'How does it work?'"}
+Classify:
 
-2. GENERAL QUESTION: "What is Rideschat?","How does it work?","Fare?","Is it safe?","Who are you?","Bei gani?","Explain"
--> {"role":"chat","reply":"[Write 2-3 lines helpful answer in Swahili/Sheng mix. Rideschat connects riders/drivers via WhatsApp, driver sets fare 300-600 KES, you see rating, you contact directly. No commission. Safe because we show contacts & ratings.]"}
+1. GREETING: "Hi","Sasa","Mambo","Niaje","Hello"
+-> {"role":"chat","reply":"👋 Sasa! Karibu Rideschat Kenya 🇰🇪\\n\\nI help riders & drivers connect.\\n\\nJust say: 'Need ride FROM to TO at TIME'\\nEg: 'Need ride Juja to Thika tomorrow 9am' or 'Denton to Irving now'"}
 
-3. RIDE: "Need ride Juja to Thika","Juja","Olenguruone","Juja to Olenguruone tomorrow 3pm"
--> extract from/to/date/time. Single location like "Juja" -> from="Juja", to=null.
+2. GENERAL Q: "What is Rideschat?","How does it work?","Fare?","Safe?"
+-> {"role":"chat","reply":"[Answer 2-3 lines Sheng mix. Connects via WhatsApp, driver sets fare 300-600 KES, show rating, contact direct. No commission.]"}
+
+3. RIDE: Extract JSON. IMPORTANT: "now" IS VALID TIME. "Denton to Irving now" -> from=Denton, to=Irving, date=today, time=now. "7 am" -> time=7:00. "Now" alone -> time=now.
 
 4. COMMAND: "TAKE 1","ONLINE","OFFLINE"
 
-Return ONLY valid JSON:
-{"role":"rider|driver|command|chat","command":"ONLINE|OFFLINE|SHOW_REQUESTS|TAKE|RATING|null","takeId":number|null,"from":string|null,"to":string|null,"date":"YYYY-MM-DD|null","time":"HH:MM|null","seats":number|null,"bags":number,"girls_only":bool,"pool_allowed":true,"rating":null,"reply":string|null}
+Return ONLY JSON:
+{"role":"rider|driver|command|chat","command":"ONLINE|OFFLINE|SHOW_REQUESTS|TAKE|RATING|null","takeId":number|null,"from":string|null,"to":string|null,"date":"YYYY-MM-DD|today|tomorrow|null","time":"HH:MM|now|null","seats":number|null,"bags":number,"girls_only":bool,"pool_allowed":true,"rating":null,"reply":string|null}
 
-Rules: If message is single word location, return it as from. Preserve draft if present.
+Rules: Single location "Juja" -> from="Juja". If message has "now", ALWAYS set time="now".
 `;
 
 async function parseWithAI(msg, contextDraft = {}) {
@@ -138,13 +159,12 @@ async function parseWithAI(msg, contextDraft = {}) {
     var tomorrow = new Date(); tomorrow.setDate(now.getDate() + 1);
     var todayInfo = now.toLocaleDateString('en-US', { weekday: 'long' }) + " " + now.toISOString().split('T')[0];
     var systemPrompt = SYSTEM_PROMPT.replaceAll("{TODAY_INFO}", todayInfo)
-                                  .replaceAll("{TODAY_DATE}", now.toISOString().split('T')[0])
-                                  .replaceAll("{TOMORROW_DATE}", tomorrow.toISOString().split('T')[0])
-                                  .replaceAll("{CONTEXT_DRAFT}", JSON.stringify(contextDraft));
+                                 .replaceAll("{TODAY_DATE}", now.toISOString().split('T')[0])
+                                 .replaceAll("{TOMORROW_DATE}", tomorrow.toISOString().split('T')[0])
+                                 .replaceAll("{CONTEXT_DRAFT}", JSON.stringify(contextDraft));
     var userPrompt = `Message: "${msg}"`;
     var apiKey = process.env.GROQ_API_KEY;
     if (!apiKey) throw new Error("GROQ_API_KEY missing");
-
     var models = ["openai/gpt-oss-20b", "openai/gpt-oss-120b", "qwen/qwen3.6-27b"];
     for (var i = 0; i < models.length; i++) {
         try {
@@ -158,7 +178,14 @@ async function parseWithAI(msg, contextDraft = {}) {
                 { headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" } }
             );
             var data = JSON.parse(res.data.choices[0].message.content.trim());
+            // ✅ FIX: handle both date and time, including "now"
             if (data.date) data.date = getRealDate(data.date);
+            if (data.time) data.time = getRealTime(data.time);
+            // If user said "now" in date field by mistake
+            if (data.date && data.date.toString().toLowerCase && data.date.toString().toLowerCase().includes(':')) {
+                data.time = getRealTime(data.date);
+                data.date = getRealDate('today');
+            }
             console.log(`Groq OK [${models[i]}]:`, data);
             return data;
         } catch (err) {
@@ -169,7 +196,6 @@ async function parseWithAI(msg, contextDraft = {}) {
     }
 }
 
-// ✅ NEW - answers open questions
 async function answerGeneralQuestion(question) {
     try {
         const res = await axios.post("https://api.groq.com/openai/v1/chat/completions", {
@@ -199,7 +225,9 @@ function formatRequests(reqs) {
     return reqs.map(function (r) {
         var girls = r.girls_only? ' 🚺 *[GIRLS ONLY]*' : '';
         var contact = cleanContactNumber(r.phone);
-        return `🆔 *TRIP #${r.id}*\n📍 *Route:* ${r.from} ➔ ${r.to}\n📅 *When:* \`${r.date || 'Today'}\` at \`${r.time || 'Flexible'}\`\n🧳 *Bags:* ${r.bags}${girls}\n👤 *Contact:* ${contact}\n\n👉 _Reply \`TAKE ${r.id}\` to accept_`;
+        var whenDate = r.date || 'Today';
+        var whenTime = r.time && r.time!== 'Flexible'? r.time : 'Now';
+        return `🆔 *TRIP #${r.id}*\n📍 *Route:* ${r.from} ➔ ${r.to}\n📅 *When:* \`${whenDate}\` at \`${whenTime}\`\n🧳 *Bags:* ${r.bags}${girls}\n👤 *Contact:* ${contact}\n\n👉 _Reply \`TAKE ${r.id}\` to accept_`;
     }).join('\n\n═════════════════\n\n');
 }
 function formatOffers(offers) {
@@ -221,7 +249,6 @@ async function handleRideLogic(phoneJid, text, realPhone) {
         var session = getSession(userPhoneKey);
         var ai = await parseWithAI(text, session.draft);
 
-        // ✅ FIXED CHAT HANDLING - greetings + general Qs
         if (ai.role === 'chat') {
             if (ai.reply && ai.reply.length > 5) {
                 await sendGupshupMessage(phoneJid, ai.reply);
@@ -233,7 +260,6 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             return;
         }
 
-        // ✅ FIXED SMART MERGE - Juja + Olenguruone = Juja->Olenguruone
         let newFrom = ai.from || null;
         let newTo = ai.to || null;
         if (session.draft.from &&!session.draft.to && newFrom &&!newTo) {
@@ -241,7 +267,6 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             newFrom = session.draft.from;
         }
         if (session.draft.from && session.draft.to && newFrom &&!newTo && newFrom!== session.draft.from) {
-            // user updating destination
             newTo = newFrom;
             newFrom = session.draft.from;
         }
@@ -279,11 +304,11 @@ async function handleRideLogic(phoneJid, text, realPhone) {
                     await ride.updateStatus("TAKEN");
                     const riderContactStr = cleanContactNumber(ride.phone);
                     const driverContactStr = cleanContactNumber(userPhoneKey);
-                    var timeStr = ride.time? ride.time : 'Flexible';
+                    var timeStr = ride.time? ride.time : 'Now';
                     await sendGupshupMessage(phoneJid, `🎉 ${toBoldSans("TRIP MATCHED!")}\n\n📍 *Route:* ${ride.from} ➔${ride.to}\n📅 *When:* \`${ride.date || 'Today'}\` at \`${timeStr}\`\n\n👤 *Rider Contact:* ${riderContactStr}`);
                     await sendGupshupMessage(ride.phone, `🚘 ${toBoldSans("DRIVER ASSIGNED!")}\n\nTrip *${ride.from}* to *${ride.to}* accepted.\n\n⭐ *Rating:*${user.rating.toFixed(1)}\n📱 *Driver:* ${driverContactStr}`);
                 } else {
-                    await sendGupshupMessage(phoneJid, `❌ *Ride #${ai.takeId}* already taken.`);
+                    await sendGupshupMessage(phoneJid, `❌ *Ride #${ai.takeId}* already taken or not found.`);
                 }
             }
             if (ai.command === 'RATING') {
@@ -301,6 +326,7 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             }
             return;
         }
+        // ✅ FIXED - now allows "now" as valid time
         if (session.draft.role === 'rider' &&!session.draft.time) {
             await sendGupshupMessage(phoneJid, `⏰ ${toBoldSans("WHAT TIME?")}\n\nLeaving when?\nEg: "Now" or "Tomorrow 9am" or "3:30 PM"`);
             return;
@@ -310,7 +336,7 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             var rideReq = await RideRequest.createCustom(userPhoneKey, session.draft);
             var matches = await RideOffer.perfectMatch(rideReq);
             var displayDate = rideReq.date || 'Today';
-            var timeStrReq = rideReq.time? rideReq.time : 'Flexible';
+            var timeStrReq = rideReq.time? rideReq.time : 'Now';
             if (matches && matches.length > 0) {
                 await sendGupshupMessage(phoneJid, `✅ ${toBoldSans("FOUND DRIVERS!")}\n\n${formatOffers(matches)}`);
             } else {
