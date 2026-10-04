@@ -86,12 +86,10 @@ function parseTimeQuick(input) {
     if (m2) { let h=parseInt(m2[1]); let min=parseInt(m2[2]); let ap=m2[4]; if(ap==='pm'&&h<12)h+=12; if(ap==='am'&&h===12)h=0; return `${String(h).padStart(2,'0')}:${String(min).padStart(2,'0')}`; }
     return null;
 }
-// FIXED: No more substring blocking - Thika will work now
 function isSimpleLocation(txt) {
     const t = txt.toLowerCase().trim();
     const exactBlock = ['hi','hey','hello','need','ride','offer','driver','car','online','offline','filter','clear','next','now','today','tomorrow','thanks','thank','thank you','ok','okay','yes','yeah','yep','cool','thx','available','requests','show','all','see','my','trip','accept','take','end ride','who are you','what are you','help','what can you do','how does it work','what is','who is','where is','how can','how to','rate','rating','need a ride','need ride','i need a ride'];
     if (exactBlock.includes(t)) return false;
-    // Let AI handle long sentences like "I need a ride to Thika how can I access?"
     if (t.includes('how can i') || t.includes('need a ride to') || t.length > 30) return false;
     if (t.length < 3 || t.length > 30) return false;
     if (/^\d+$/.test(t)) return false;
@@ -168,25 +166,38 @@ async function parseWithAI(msg, contextDraft={}) {
         } catch(e) { if (i===models.length-1) throw e; }
     }
 }
+// FIXED: No more "Just say Need a ride from Juja to Thika now" spam
 async function answerGeneralQuestion(q, loc="Juja") {
     const lower = q.toLowerCase().trim();
     if (!lower || lower.length <= 2) return null;
     if (/^\d+$/.test(lower)) return null;
+
+    if (['thanks','thank you','thankyou','asante','asante sana','thx'].includes(lower)) {
+        return "You're welcome!";
+    }
+    if (['ok','okay','sawa','poa','cool','nice','great','alright'].includes(lower)) {
+        return "Got it!";
+    }
+    if (['hi','hey','hello'].includes(lower)) {
+        return `${getTimeGreeting()}! I'm Bett - I help students with rides.`;
+    }
+    if (lower.includes('who are you') || lower.includes('what are you')) {
+        return "I'm Bett! I help students in Kenya connect with affordable rides.";
+    }
+    if (lower.includes('help') || lower.includes('what can you do') || lower.includes('how does it work')) {
+        return "I'm Bett! I connect students with drivers. Need a ride? Tell me where from and where to. Driver? Say Online.";
+    }
+
     try {
-        const greeting = getTimeGreeting();
-        let sys = `You are Bett - a student ride-sharing assistant in Kenya. Your name is Bett. You were created to help students connect with rides quickly and affordably. Respond ONLY in English.
-IDENTITY: Name: Bett, Purpose: Connect students with rides in Kenya. If asked "Who are you?" -> "I'm Bett! I help students in Kenya connect with affordable rides. Whether you need a ride to campus or town, just say 'Need a ride from Juja to Thika now' and I'll link you with drivers. Drivers say 'Online' to see requests."
-RULES: RIDER: "Need a ride from Juja to Thika now", DRIVER: "Online" to see rides, then "4" or "TAKE 4", When matched, chat here. Say "END RIDE" to close.
-STYLE: 2-3 lines max, friendly English only, student-friendly. For general knowledge: Answer in 1 short factual English sentence, then redirect to student rides. Example: "What is a baboon?" -> "A baboon is a large African monkey that lives in troops. I'm Bett, here to help students with rides - need a ride? Say 'Need a ride from Juja to Thika now'."
-Location: ${loc}`;
+        let sys = `You are Bett, student ride assistant. Rules: Respond in English only, 1 short sentence max, NO example like "Juja to Thika", NO emoji, NO "Just say Need a ride", NO "I'll link you with a driver". Be brief and helpful.`;
         const res = await axios.post("https://api.groq.com/openai/v1/chat/completions", {
             model: "openai/gpt-oss-20b",
             messages: [{role:"system",content:sys},{role:"user",content:q}],
-            temperature:0.5, max_tokens: 200
+            temperature:0.5, max_tokens: 60
         }, { headers:{ "Authorization":`Bearer ${process.env.GROQ_API_KEY}` } });
         return res.data.choices[0].message.content.trim();
     } catch(e) {
-        return `${getTimeGreeting()}! I'm Bett - I help students connect with affordable rides in Kenya. Need a ride? Say: Need a ride from Juja to Thika now. Driver? Say: Online`;
+        return "I'm Bett - I help students with rides.";
     }
 }
 async function sendGupshupMessage(toJid, txt) {
@@ -232,7 +243,6 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             if (lowerText.includes('👍') || lowerText.includes('❤️') || lowerText.includes('😍')) { if (lowerText.length < 5) return; }
         }
         if (lowerText==='need a ride' || lowerText==='need ride' || lowerText.startsWith('need a ride') || lowerText==='i need a ride' || lowerText.includes('i need a ride to')) {
-            // Extract "to Thika" if present
             let toMatch = lowerText.match(/to\s+([a-z]+)/);
             let fromMatch = lowerText.match(/from\s+([a-z]+)/);
             let session = getSession(userPhoneKey);
@@ -262,7 +272,6 @@ async function handleRideLogic(phoneJid, text, realPhone) {
         const isNewStart = lowerText==='offline' || lowerText.startsWith('offline') || lowerText==='online' || lowerText.startsWith('online') || lowerText.startsWith('filter ') || lowerText.includes('clear filter');
         if (isNewStart) { killChatFor(userPhoneKey); clearSession(userPhoneKey); }
         if (activeChats[userPhoneKey]) { if (await checkAndForwardChat(phoneJid, text, realPhone)) return; }
-        // FIXED LOCATION HANDLER - Thika now works
         if (isSimpleLocation(text)) {
             var user = await User.getOrCreate(userPhoneKey);
             var session = getSession(userPhoneKey);
@@ -347,7 +356,6 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             } else { await sendGupshupMessage(phoneJid, `What time? Reply Now or 9 AM`); return; }
         }
         var ai = await parseWithAI(text, session2.draft);
-        // If AI detected a ride with from/to, use it
         if (ai.role==='rider' && ai.from && ai.to) {
             session2.draft.from = ai.from;
             session2.draft.to = ai.to;
@@ -368,7 +376,7 @@ async function handleRideLogic(phoneJid, text, realPhone) {
         }
         if (ai.role==='chat') {
             let reply = await answerGeneralQuestion(text, user2.location||session2.draft.from||"Juja");
-            if (!reply) reply = `${getTimeGreeting()}! I'm Bett — I help students connect with affordable rides. Say: Need a ride from Juja to Thika now, or say Online if you're a driver.`;
+            if (!reply) reply = `${getTimeGreeting()}! I'm Bett — I help students with rides.`;
             await sendGupshupMessage(phoneJid, reply);
             return;
         }
