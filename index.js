@@ -198,7 +198,8 @@ async function parseWithAI(msg, contextDraft = {}) {
     var apiKey = process.env.GROQ_API_KEY;
     if (!apiKey) throw new Error("GROQ_API_KEY missing in .env");
 
-    var models = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"];
+    // Correct active Groq model identifiers
+    var models = ["llama3-70b-8192", "llama-3.1-8b-instant"];
 
     for (var i = 0; i < models.length; i++) {
         try {
