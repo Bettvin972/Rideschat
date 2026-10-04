@@ -319,13 +319,15 @@ Current Context:
 
 CLASSIFICATION RULES:
 1. "rider": User NEEDS/WANTS a ride (e.g., "Need a ride", "taking a cab to Thika", "who is going to Juja now?", "need ride ASAP", "from Juja to Thika").
+   - CRITICAL: If Active User Draft Session has "role": "rider" or "role": "driver", map isolated place names (e.g., "Houston", "Dallas", "Thika") or time answers to the missing "from", "to", or "time" fields. NEVER classify single-word slot responses as "chat".
 2. "driver": User OWNS/OFFERS a ride or vehicle (e.g., "giving ride now", "ride available", "driving to Thika", "offering 3 seats from Juja", "car ready", "leaving Juja shortly", "I want to offer ride").
 3. "command": Precise action flags like ONLINE, OFFLINE, SHOW_REQUESTS, CLEAR_FILTERS, NEXT, TAKE [ID], FILTER [Location], END_RIDE.
-4. "chat": General questions, chit-chat, greetings, bot capabilities ("who are you", "how does it work").
+4. "chat": General knowledge questions, greetings, or off-topic queries ONLY when NOT responding to an active draft prompt.
 
 Extraction Requirements:
+- If session draft lacks "from", extract a location input as "from".
+- If session draft has "from" but lacks "to", extract a location input as "to".
 - Resolve relative dates/times to structured values ("now", "tomorrow", "HH:MM", "YYYY-MM-DD").
-- Extract route origins ("from") and destinations ("to") if present.
 
 Return ONLY a JSON object:
 {
@@ -477,19 +479,25 @@ async function handleRideLogic(phoneJid, text, realPhone) {
 
         // --- ROLE: DRIVER ---
         if (ai.role === 'driver') {
-            let from = ai.from || currentSess.draft.from;
-            let to = ai.to || currentSess.draft.to;
+            let draft = currentSess.draft || {};
+            let from = ai.from || draft.from;
+            let to = ai.to || draft.to;
 
             if (!from) {
                 currentSess.draft = { role: 'driver' };
                 await sendGupshupMessage(phoneJid, `Great! You want to offer a ride 🚗\nWhere are you driving from? Example: Juja`);
                 return;
             }
+
+            currentSess.draft.from = from;
+
             if (from && !to) {
-                currentSess.draft = { role: 'driver', from };
+                currentSess.draft = { role: 'driver', from: from };
                 await sendGupshupMessage(phoneJid, `Got it, driving from ${from} — where to? Example: Thika`);
                 return;
             }
+
+            currentSess.draft.to = to;
 
             let u = await User.getOrCreate(userPhoneKey);
             await u.setOnline(from, 2);
@@ -516,26 +524,35 @@ async function handleRideLogic(phoneJid, text, realPhone) {
 
         // --- ROLE: RIDER ---
         if (ai.role === 'rider') {
-            let from = ai.from || currentSess.draft.from;
-            let to = ai.to || currentSess.draft.to;
-            let time = ai.time || currentSess.draft.time;
-            let date = ai.date || currentSess.draft.date || getRealDate('today');
+            let draft = currentSess.draft || {};
+            let from = ai.from || draft.from;
+            let to = ai.to || draft.to;
+            let time = ai.time || draft.time;
+            let date = ai.date || draft.date || getRealDate('today');
 
             if (!from) {
                 currentSess.draft = { role: 'rider' };
                 await sendGupshupMessage(phoneJid, `Got it! Where are you riding from? Example: Juja`);
                 return;
             }
+
+            currentSess.draft.from = from;
+
             if (from && !to) {
-                currentSess.draft = { role: 'rider', from };
+                currentSess.draft = { role: 'rider', from: from };
                 await sendGupshupMessage(phoneJid, `Got it, from ${from} — where to?`);
                 return;
             }
+
+            currentSess.draft.to = to;
+
             if (from && to && !time) {
-                currentSess.draft = { role: 'rider', from, to, date };
+                currentSess.draft = { role: 'rider', from: from, to: to, date: date };
                 await sendGupshupMessage(phoneJid, `Got it, ${from} → ${to}. What time? Reply Now or 9 AM`);
                 return;
             }
+
+            currentSess.draft.time = time;
 
             let rideReq = await RideRequest.createCustom(userPhoneKey, { from, to, time, date });
             let dispDate = toDisplayDate(date);
@@ -629,7 +646,7 @@ async function handleRideLogic(phoneJid, text, realPhone) {
         }
 
         // --- ROLE: CHAT ---
-        let reply = await answerGeneralQuestion(text, currentSess.draft.from || "Juja");
+        let reply = await answerGeneralQuestion(text, (currentSess.draft && currentSess.draft.from) || "Juja");
         if (!reply) reply = `${getTimeGreeting()}! I'm Bett — I help students with rides.`;
         await sendGupshupMessage(phoneJid, reply);
 
