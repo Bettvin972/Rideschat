@@ -511,7 +511,6 @@ function killChatFor(phone) {
   if (chat?.with) activeChats.delete(normalizePhone(chat.with));
 }
 
-// Additional missing helper functions
 async function answerGeneralQuestion(text, region, fromDraft) {
   const greeting = getTimeGreeting(region.timezone);
   const lower = String(text || '').toLowerCase().trim();
@@ -578,11 +577,20 @@ async function notifyMatchingDrivers(ride, region) {
 async function takeRide(phoneJid, driverPhone, rideId, region) {
   try {
     const result = await claimRideSafely(rideId, driverPhone);
-    if (!result.success) {
-      await sendWhatsAppMessage(phoneJid, result.message || 'Unable to claim ride.');
+    
+    // Check if result exists or if success flag is false
+    if (!result || !result.success) {
+      const errorMsg = result?.message || '⚠️ Could not accept this ride. It may have already been taken, cancelled, or does not exist.';
+      await sendWhatsAppMessage(phoneJid, errorMsg);
       return;
     }
+
     const ride = result.ride;
+    if (!ride) {
+      await sendWhatsAppMessage(phoneJid, '⚠️ Could not locate ride details.');
+      return;
+    }
+
     setActiveChat(driverPhone, ride.phone, ride.id);
     const driverUser = await User.getOrCreate(driverPhone);
     const riderUser = await User.getOrCreate(ride.phone);
@@ -601,7 +609,7 @@ async function takeRide(phoneJid, driverPhone, rideId, region) {
     }
   } catch (err) {
     logError('takeRide failed', err);
-    await sendWhatsAppMessage(phoneJid, 'Error accepting ride. Please try again.');
+    await sendWhatsAppMessage(phoneJid, '❌ An error occurred while accepting the ride. Please try again.');
   }
 }
 
