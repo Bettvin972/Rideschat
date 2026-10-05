@@ -511,6 +511,156 @@ function killChatFor(phone) {
   if (chat?.with) activeChats.delete(normalizePhone(chat.with));
 }
 
+// Additional missing helper functions
+async function answerGeneralQuestion(text, region, fromDraft) {
+  const greeting = getTimeGreeting(region.timezone);
+  const lower = String(text || '').toLowerCase().trim();
+  if (['hi', 'hello', 'hey', 'start', 'menu'].includes(lower)) {
+    return `${greeting}! 👋 I'm Induu, your ride-sharing assistant.\n\n*How can I help you today?*\n• *Need a ride?* Say "Need a ride from Juja to Nairobi tomorrow at 5pm"\n• *Driving?* Say "ONLINE Juja" or "Offering ride from Juja to Nairobi"\n• Say *HELP* for all commands.`;
+  }
+  return `${greeting}! 👋 Tell me where you're going and when, or say *HELP* to see available commands.`;
+}
+
+async function getOpenRides() {
+  try {
+    const rides = await RideRequest.findAll({
+      where: { status: 'OPEN' },
+      order: [['createdAt', 'DESC']],
+      limit: 50,
+    });
+    return rides.filter(ride => !isPollutedRide(ride));
+  } catch (err) {
+    logError('getOpenRides failed', err);
+    return [];
+  }
+}
+
+function filterRidesForDriver(rides, driverFrom, driverTo, date) {
+  return rides.filter(ride => {
+    if (isPollutedRide(ride)) return false;
+    if (date && ride.date && ride.date !== date) return false;
+    return routeMatches(driverFrom, driverTo, ride.from, ride.to);
+  });
+}
+
+async function notifyMatchingDrivers(ride, region) {
+  try {
+    const drivers = await User.findAll({
+      where: {
+        isOnline: true,
+        onlineUntil: { [Op.gt]: new Date() },
+      },
+    });
+
+    let notifiedCount = 0;
+    for (const driver of drivers) {
+      if (driver.phone === ride.phone) continue;
+      const matchesFrom = !driver.filterFrom || areLocationsNearby(driver.filterFrom, ride.from) || areLocationsNearby(driver.filterFrom, ride.to);
+      const matchesTo = !driver.filterTo || areLocationsNearby(driver.filterTo, ride.to) || areLocationsNearby(driver.filterTo, ride.from);
+      if (matchesFrom && matchesTo) {
+        const jid = getJid(driver.phone);
+        if (jid) {
+          await sendWhatsAppMessage(
+            jid,
+            `*NEW MATCHING RIDE REQUEST*\nRide ID: ${ride.id}\n${ride.from} → ${ride.to}\n${toDisplayDate(ride.date, region.timezone)} • ${toDisplayTime(ride.time)}\nSeats: ${ride.seats}\n\nReply *TAKE ${ride.id}* or *${ride.id}* to accept this ride.`
+          );
+          notifiedCount++;
+        }
+      }
+    }
+    return notifiedCount;
+  } catch (err) {
+    logError('notifyMatchingDrivers failed', err);
+    return 0;
+  }
+}
+
+async function takeRide(phoneJid, driverPhone, rideId, region) {
+  try {
+    const result = await claimRideSafely(rideId, driverPhone);
+    if (!result.success) {
+      await sendWhatsAppMessage(phoneJid, result.message || 'Unable to claim ride.');
+      return;
+    }
+    const ride = result.ride;
+    setActiveChat(driverPhone, ride.phone, ride.id);
+    const driverUser = await User.getOrCreate(driverPhone);
+    const riderUser = await User.getOrCreate(ride.phone);
+    const riderJid = getJid(ride.phone);
+
+    await sendWhatsAppMessage(
+      phoneJid,
+      `*RIDE MATCHED!* 🎉\nYou accepted Ride ID ${ride.id}.\nRider: ${riderUser.name || 'Rider'} (${Number(riderUser.rating || 5).toFixed(1)}★)\n\nChat is connected! Any message you type now will be forwarded directly to the rider.\nSay *END RIDE* when completed.`
+    );
+
+    if (riderJid) {
+      await sendWhatsAppMessage(
+        riderJid,
+        `*DRIVER FOUND!* 🎉\nDriver: ${driverUser.name || 'Driver'} (${Number(driverUser.rating || 5).toFixed(1)}★) accepted your Ride ID ${ride.id}.\n\nChat connected! Any message you type now will be sent to your driver.`
+      );
+    }
+  } catch (err) {
+    logError('takeRide failed', err);
+    await sendWhatsAppMessage(phoneJid, 'Error accepting ride. Please try again.');
+  }
+}
+
+async function checkAndForwardChat(senderJid, text, senderPhone) {
+  const activeChat = getActiveChat(senderPhone);
+  if (!activeChat) return false;
+  const recipientJid = getJid(activeChat.with);
+  if (!recipientJid) return false;
+  await sendWhatsAppMessage(recipientJid, `💬 ${text}`);
+  return true;
+}
+
+async function endRideForUser(phoneJid, userPhone, region) {
+  const activeChat = getActiveChat(userPhone);
+  if (!activeChat) {
+    await sendWhatsAppMessage(phoneJid, 'You have no active ongoing ride chat.');
+    return;
+  }
+  const rideId = activeChat.rideId;
+  const otherPhone = activeChat.with;
+  killChatFor(userPhone);
+  await completeRideSafely(rideId, userPhone);
+
+  ratingSessions.set(normalizePhone(userPhone), { other: otherPhone, rideId, createdAt: Date.now() });
+  ratingSessions.set(normalizePhone(otherPhone), { other: userPhone, rideId, createdAt: Date.now() });
+
+  await sendWhatsAppMessage(phoneJid, `*RIDE COMPLETED!*\nChat closed.\n\nHow was your trip? Rate the other person from 1 to 5 stars (or type 'skip').`);
+  const otherJid = getJid(otherPhone);
+  if (otherJid) {
+    await sendWhatsAppMessage(otherJid, `*RIDE COMPLETED!*\nChat closed.\n\nHow was your trip? Rate the other person from 1 to 5 stars (or type 'skip').`);
+  }
+}
+
+async function cancelRideForUser(phoneJid, userPhone) {
+  try {
+    const activeChat = getActiveChat(userPhone);
+    if (activeChat) {
+      const otherJid = getJid(activeChat.with);
+      killChatFor(userPhone);
+      await cancelRideSafely(activeChat.rideId, userPhone);
+      if (otherJid) await sendWhatsAppMessage(otherJid, `Ride ID ${activeChat.rideId} was cancelled.`);
+      await sendWhatsAppMessage(phoneJid, `Ride ID ${activeChat.rideId} cancelled.`);
+      return;
+    }
+    const openRides = await findUserOpenRequests(userPhone);
+    if (!openRides.length) {
+      await sendWhatsAppMessage(phoneJid, 'You have no open ride requests to cancel.');
+      return;
+    }
+    for (const ride of openRides) {
+      await cancelRideSafely(ride.id, userPhone);
+    }
+    await sendWhatsAppMessage(phoneJid, `Cancelled ${openRides.length} open ride request(s).`);
+  } catch (err) {
+    logError('cancelRideForUser failed', err);
+    await sendWhatsAppMessage(phoneJid, 'Failed to cancel ride.');
+  }
+}
+
 async function sendWhatsAppMessage(toJid, text) {
   if (!sock || !toJid) return false;
   const jid = getJid(toJid);
