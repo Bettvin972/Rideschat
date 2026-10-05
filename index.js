@@ -22,7 +22,7 @@ const MAX_MESSAGE_LENGTH = 4000;
 const RECONNECT_DELAY_MS = 5000;
 const EXPIRY_INTERVAL_MS = 15 * 60 * 1000;
 const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
-const GROQ_MODELS = ['llama-3.1-8b-instant', 'openai/gpt-oss-20b'];
+const GROQ_MODELS = ['llama-3.1-8b-instant', 'llama-3.3-70b-versatile'];
 
 let sock = null;
 let qrLast = null;
@@ -36,11 +36,14 @@ const ratingSessions = new Map();
 const endingLocks = new Set();
 const userQueues = new Map();
 
-function logError(prefix, err) { console.error(prefix, err?.stack || err?.message || err); }
+function logError(prefix, err) {
+    const details = err?.response?.data || err?.data || err;
+    console.error(prefix, details?.stack || details?.message || JSON.stringify(details) || err);
+}
 function normalizePhone(value) { if (!value) return ''; return String(value).split('@')[0].replace(/[^0-9]/g, ''); }
 function canonicalPhone(realPhone, remoteJid) { return normalizePhone(realPhone) || normalizePhone(remoteJid); }
-function getJid(phoneOrJid) { if (!phoneOrJid) return ''; if (String(phoneOrJid).includes('@')) return String(phoneOrJid); const digits = normalizePhone(phoneOrJid); return digits ? `${digits}@s.whatsapp.net` : ''; }
-function getDirectChatLink(jid) { const number = normalizePhone(jid); return number ? `https://wa.me/${number}` : ''; }
+function getJid(phoneOrJid) { if (!phoneOrJid) return ''; if (String(phoneOrJid).includes('@')) return String(phoneOrJid); const digits = normalizePhone(phoneOrJid); return digits? `${digits}@s.whatsapp.net` : ''; }
+function getDirectChatLink(jid) { const number = normalizePhone(jid); return number? `https://wa.me/${number}` : ''; }
 function clampInteger(value, min, max, fallback = null) { const n = Number.parseInt(value, 10); if (!Number.isFinite(n)) return fallback; return Math.min(max, Math.max(min, n)); }
 function cleanText(value, maxLength = MAX_MESSAGE_LENGTH) { return String(value || '').trim().slice(0, maxLength); }
 
@@ -61,12 +64,12 @@ function queueUserMessage(phone, task) {
 function detectUserRegion(jid) {
     const digits = normalizePhone(jid);
     if (digits.startsWith('254') || (digits.startsWith('0') && digits.length === 10)) return { country: 'KE', timezone: 'Africa/Nairobi', defaultCity: 'Juja', defaultDestination: 'Nairobi', examplePlaces: 'Juja or Ruiru', exampleDest: 'Thika or Nairobi' };
-    if (digits.startsWith('1') || (digits.length === 10 && !digits.startsWith('0'))) return { country: 'US', timezone: 'America/Chicago', defaultCity: 'Denton', defaultDestination: 'Dallas', examplePlaces: 'Denton or Frisco', exampleDest: 'Dallas or Fort Worth' };
+    if (digits.startsWith('1') || (digits.length === 10 &&!digits.startsWith('0'))) return { country: 'US', timezone: 'America/Chicago', defaultCity: 'Denton', defaultDestination: 'Dallas', examplePlaces: 'Denton or Frisco', exampleDest: 'Dallas or Fort Worth' };
     return { country: 'US', timezone: 'America/Chicago', defaultCity: 'Main Campus', defaultDestination: 'Downtown', examplePlaces: 'Campus or North Side', exampleDest: 'Downtown or Station' };
 }
 function getLocalParts(date = new Date(), timezone = 'America/Chicago') {
     const parts = new Intl.DateTimeFormat('en-US', { timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'long', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).formatToParts(date);
-    return Object.fromEntries(parts.filter(p => p.type !== 'literal').map(p => [p.type, p.value]));
+    return Object.fromEntries(parts.filter(p => p.type!== 'literal').map(p => [p.type, p.value]));
 }
 function getLocalDateString(date = new Date(), timezone = 'America/Chicago') { const p = getLocalParts(date, timezone); return `${p.year}-${p.month}-${p.day}`; }
 function getTimeGreeting(timezone) { const hour = Number(getLocalParts(new Date(), timezone).hour); if (hour >= 5 && hour < 12) return 'Good morning'; if (hour >= 12 && hour < 15) return 'Good afternoon'; if (hour >= 15 && hour < 19) return 'Good evening'; return 'Hello'; }
@@ -100,7 +103,7 @@ function getRealTime(aiTime, timezone) {
     const twentyFour = value.match(/\b(\d{1,2}):(\d{2})\b/); if (twentyFour) { const hour = Number(twentyFour[1]); const minute = Number(twentyFour[2]); if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null; return `${String(hour).padStart(2,'0')}:${String(minute).padStart(2,'0')}`; }
     return null;
 }
-function toDisplayTime(time) { if (!time || time === 'Flexible' || time === 'now') return 'now'; const parts = String(time).split(':'); const hour = Number.parseInt(parts[0], 10); const minute = Number.parseInt(parts[1] || '0', 10); if (!Number.isFinite(hour)) return String(time); return `${hour % 12 || 12}:${String(minute).padStart(2,'0')} ${hour >= 12 ? 'PM' : 'AM'}`; }
+function toDisplayTime(time) { if (!time || time === 'Flexible' || time === 'now') return 'now'; const parts = String(time).split(':'); const hour = Number.parseInt(parts[0], 10); const minute = Number.parseInt(parts[1] || '0', 10); if (!Number.isFinite(hour)) return String(time); return `${hour % 12 || 12}:${String(minute).padStart(2,'0')} ${hour >= 12? 'PM' : 'AM'}`; }
 function toDisplayDate(date, timezone) {
     if (!date) return ''; const value = String(date); if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
     const today = getLocalDateString(new Date(), timezone); const tomorrow = localDatePlusDays(1, timezone);
@@ -108,9 +111,9 @@ function toDisplayDate(date, timezone) {
     const parsed = new Date(`${value}T12:00:00Z`); return parsed.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC' });
 }
 function parseLocalDateTime(dateString, timeString, timezone) {
-    if (!dateString || !timeString || timeString === 'now') return null; const match = String(timeString).match(/^(\d{2}):(\d{2})$/); if (!match) return null;
+    if (!dateString ||!timeString || timeString === 'now') return null; const match = String(timeString).match(/^(\d{2}):(\d{2})$/); if (!match) return null;
     const hour = Number(match[1]); const minute = Number(match[2]); if (hour > 23 || minute > 59) return null;
-    const parts = String(dateString).split('-').map(Number); if (parts.length !== 3 || parts.some(n => !Number.isFinite(n))) return null;
+    const parts = String(dateString).split('-').map(Number); if (parts.length!== 3 || parts.some(n =>!Number.isFinite(n))) return null;
     const [year, month, day] = parts; let guess = new Date(Date.UTC(year, month - 1, day, hour, minute, 0));
     for (let i = 0; i < 2; i++) { const local = getLocalParts(guess, timezone); const asUTC = Date.UTC(Number(local.year), Number(local.month)-1, Number(local.day), Number(local.hour), Number(local.minute), Number(local.second)); const wanted = Date.UTC(year, month-1, day, hour, minute, 0); guess = new Date(guess.getTime() + (wanted - asUTC)); }
     return guess;
@@ -120,30 +123,30 @@ function getCountdownText(rideTime, rideDate, timezone) {
     const target = parseLocalDateTime(rideDate, rideTime, timezone); if (!target) return 'NOW';
     const diffMins = Math.round((target.getTime() - Date.now()) / 60000);
     if (diffMins <= 0 && diffMins > -30) return 'NOW'; if (diffMins <= -30) return 'OVERDUE';
-    if (diffMins < 60) return `in ${diffMins}m`; const hours = Math.floor(diffMins/60); const minutes = diffMins % 60; return `in ${hours}h${minutes ? `${minutes}m` : ''}`;
+    if (diffMins < 60) return `in ${diffMins}m`; const hours = Math.floor(diffMins/60); const minutes = diffMins % 60; return `in ${hours}h${minutes? `${minutes}m` : ''}`;
 }
 function sortAndTagRides(rides, timezone) {
     const now = Date.now();
     return rides.map(ride => {
-        const item = ride.dataValues ? { ...ride.dataValues } : { ...ride };
-        const target = item.time && item.time !== 'now' && item.time !== 'Flexible' ? parseLocalDateTime(item.date || getLocalDateString(new Date(), timezone), item.time, timezone) : new Date();
-        const targetMs = target ? target.getTime() : now; const diffMins = Math.round((targetMs - now)/60000);
-        return { ...item, diffMins, isUrgent: diffMins >= -30 && diffMins <= 60, countdownStr: getCountdownText(item.time, item.date, timezone) };
-    }).sort((a,b)=>{ if (a.isUrgent && !b.isUrgent) return -1; if (!a.isUrgent && b.isUrgent) return 1; return a.diffMins - b.diffMins; });
+        const item = ride.dataValues? {...ride.dataValues } : {...ride };
+        const target = item.time && item.time!== 'now' && item.time!== 'Flexible'? parseLocalDateTime(item.date || getLocalDateString(new Date(), timezone), item.time, timezone) : new Date();
+        const targetMs = target? target.getTime() : now; const diffMins = Math.round((targetMs - now)/60000);
+        return {...item, diffMins, isUrgent: diffMins >= -30 && diffMins <= 60, countdownStr: getCountdownText(item.time, item.date, timezone) };
+    }).sort((a,b)=>{ if (a.isUrgent &&!b.isUrgent) return -1; if (!a.isUrgent && b.isUrgent) return 1; return a.diffMins - b.diffMins; });
 }
 function normalizeLocation(value) { return String(value || '').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu,' ').replace(/\s+/g,' ').trim(); }
 function locationTokens(value) { return normalizeLocation(value).split(/\s+/).filter(Boolean); }
 function isValidLocation(location) {
     if (!location) return false; const value = normalizeLocation(location); if (value.length < 2 || value.length > MAX_LOCATION_LENGTH) return false;
     const invalid = ['need a ride','need ride','i need','want ride','want a ride','online','offline','hello','hi','hey','thanks','where is','what is','who is','when did','tell me','how are you'];
-    return !invalid.some(x => value === x || value.includes(x));
+    return!invalid.some(x => value === x || value.includes(x));
 }
-function locationsEqual(a,b){ const x=normalizeLocation(a); const y=normalizeLocation(b); return !!x && !!y && x===y; }
+function locationsEqual(a,b){ const x=normalizeLocation(a); const y=normalizeLocation(b); return!!x &&!!y && x===y; }
 function areLocationsNearby(a,b){
-    const x=normalizeLocation(a); const y=normalizeLocation(b); if (!x || !y) return false; if (x===y) return true; if (x.includes(y) || y.includes(x)) return true;
+    const x=normalizeLocation(a); const y=normalizeLocation(b); if (!x ||!y) return false; if (x===y) return true; if (x.includes(y) || y.includes(x)) return true;
     const aTokens=locationTokens(x); const bTokens=new Set(locationTokens(y));
     const stopWords=new Set(['road','street','st','rd','avenue','ave','campus','area','town','city','the','near']);
-    const meaningfulA=aTokens.filter(token=>token.length>=4 && !stopWords.has(token));
+    const meaningfulA=aTokens.filter(token=>token.length>=4 &&!stopWords.has(token));
     return meaningfulA.some(token=>bTokens.has(token));
 }
 function routeMatches(driverFrom, driverTo, rideFrom, rideTo){
@@ -157,7 +160,7 @@ function isPollutedRide(ride){
     const bad=['where','who','what','when','why','how','president','amazon','founder','okay','filter','end','next','available','tell me','what is','who is'];
     if (bad.some(word=>fields.some(field=>field.includes(word)))) return true;
     const from=String(ride?.from||'').trim(); const to=String(ride?.to||'').trim();
-    return (!isValidLocation(from) || !isValidLocation(to) || from.length>MAX_LOCATION_LENGTH || to.length>MAX_LOCATION_LENGTH);
+    return (!isValidLocation(from) ||!isValidLocation(to) || from.length>MAX_LOCATION_LENGTH || to.length>MAX_LOCATION_LENGTH);
 }
 function isCommandPhrase(text){
     const value=String(text||'').toLowerCase().trim(); if (!value) return true;
@@ -172,7 +175,7 @@ function parseRating(text){
     const number=value.match(/\b([1-5])\b/); return number?Number(number[1]):null;
 }
 async function addRatingToUser(phone, newRating){
-    const key=normalizePhone(phone); if (!key || ![1,2,3,4,5].includes(Number(newRating))) return 5;
+    const key=normalizePhone(phone); if (!key ||![1,2,3,4,5].includes(Number(newRating))) return 5;
     try{
         const user=await User.getOrCreate(key);
         const count=Math.max(0,Number(user.ratingCount||0)); const currentRating=Number.isFinite(Number(user.rating))?Number(user.rating):5;
@@ -180,8 +183,8 @@ async function addRatingToUser(phone, newRating){
         await user.save(); return Number(user.rating||5);
     } catch(err){ logError('Rating update failed',err); return 5; }
 }
-async function sendWhatsAppMessage(toJid, text){ if (!sock || !toJid) return false; const jid=getJid(toJid); if (!jid) return false; try{ await sock.sendMessage(jid,{ text: cleanText(text) }); return true; } catch(err){ logError(`WhatsApp send failed [${jid}]`,err); return false; } }
-function setActiveChat(phone, other, rideId){ const key=normalizePhone(phone); const otherKey=normalizePhone(other); if (!key || !otherKey) return; activeChats.set(key,{ with: otherKey, rideId: Number(rideId) }); activeChats.set(otherKey,{ with: key, rideId: Number(rideId) }); }
+async function sendWhatsAppMessage(toJid, text){ if (!sock ||!toJid) return false; const jid=getJid(toJid); if (!jid) return false; try{ await sock.sendMessage(jid,{ text: cleanText(text) }); return true; } catch(err){ logError(`WhatsApp send failed [${jid}]`,err); return false; } }
+function setActiveChat(phone, other, rideId){ const key=normalizePhone(phone); const otherKey=normalizePhone(other); if (!key ||!otherKey) return; activeChats.set(key,{ with: otherKey, rideId: Number(rideId) }); activeChats.set(otherKey,{ with: key, rideId: Number(rideId) }); }
 function getActiveChat(phone){ return activeChats.get(normalizePhone(phone)); }
 function killChatFor(phone){ const key=normalizePhone(phone); if (!key) return; const chat=activeChats.get(key); activeChats.delete(key); if (chat?.with) activeChats.delete(normalizePhone(chat.with)); }
 
@@ -212,12 +215,15 @@ async function answerGeneralQuestion(question, region, location){
     if (['ok','okay','cool','nice','great','alright'].includes(lower)) return 'Got it!';
     if (['hi','hey','hello','hii','heyy','yo'].includes(lower)) return `${getTimeGreeting(region.timezone)}! I'm Induu - I help students with rides.`;
     if (lower.includes('who are you') || lower.includes('what are you')) return "I'm Induu! I help students connect with affordable rides near campus.";
-    
+
     const apiKey=process.env.GROQ_API_KEY; if (!apiKey) return null;
     try{
         const response=await axios.post(GROQ_URL,{ model: GROQ_MODELS[0], messages:[{ role:'system', content:`You are Induu, a helpful AI assistant. Answer general knowledge questions accurately and clearly in concise English (maximum 3 sentences). Current location context: ${location||region.defaultCity}, ${region.country}. No emojis.` },{ role:'user', content: cleanText(question,1000) }], temperature:0.3, max_tokens:200 },{ headers:{ Authorization:`Bearer ${apiKey}`, 'Content-Type':'application/json' }, timeout:15000 });
         return response.data?.choices?.[0]?.message?.content?.trim()||null;
-    } catch(err){ return null; }
+    } catch(err){
+        console.error('answerGeneralQuestion Groq failed:', err.response?.data || err.message);
+        return null;
+    }
 }
 
 const SYSTEM_PROMPT=`
@@ -247,19 +253,51 @@ function validateAIResult(data){
 }
 
 async function parseWithAI(message, region, contextDraft={}){
-    const apiKey=process.env.GROQ_API_KEY; if (!apiKey) return { role:'chat' };
-    const todayDate=getLocalDateString(new Date(), region.timezone); const local=getLocalParts(new Date(), region.timezone);
+    const apiKey=process.env.GROQ_API_KEY;
+    if (!apiKey){
+        console.error('GROQ_API_KEY missing');
+        return { role:'chat' };
+    }
+    const todayDate=getLocalDateString(new Date(), region.timezone);
+    const local=getLocalParts(new Date(), region.timezone);
     const todayInfo=`${local.weekday} ${todayDate} ${local.hour}:${local.minute}`;
     const prompt=SYSTEM_PROMPT.replace('{COUNTRY}',region.country).replace('{TODAY_INFO}',todayInfo).replace('{TODAY_DATE}',todayDate).replace('{CONTEXT_DRAFT}',JSON.stringify(contextDraft||{}));
+
     for (const model of GROQ_MODELS){
         try{
-            const response=await axios.post(GROQ_URL,{ model, messages:[{ role:'system', content: prompt },{ role:'user', content: cleanText(message) }], temperature:0.05, response_format:{ type:'json_object' }, max_tokens:300 },{ headers:{ Authorization:`Bearer ${apiKey}`, 'Content-Type':'application/json' }, timeout:15000 });
-            const content=response.data?.choices?.[0]?.message?.content; if (!content) continue;
+            const response=await axios.post(GROQ_URL,{
+                model,
+                messages:[
+                    { role:'system', content: prompt },
+                    { role:'user', content: cleanText(message) }
+                ],
+                temperature:0.05,
+                response_format:{ type:'json_object' },
+                max_tokens:300
+            },{
+                headers:{
+                    Authorization:`Bearer ${apiKey}`,
+                    'Content-Type':'application/json'
+                },
+                timeout:15000
+            });
+            const content=response.data?.choices?.[0]?.message?.content;
+            if (!content){
+                console.error(`Groq empty content for ${model}`);
+                continue;
+            }
             const data=validateAIResult(JSON.parse(content));
-            if (data.from && !isValidLocation(data.from)) data.from=null; if (data.to && !isValidLocation(data.to)) data.to=null;
-            if (data.date) data.date=getRealDate(data.date, region.timezone); if (data.time) data.time=getRealTime(data.time, region.timezone);
+            if (data.from &&!isValidLocation(data.from)) data.from=null;
+            if (data.to &&!isValidLocation(data.to)) data.to=null;
+            if (data.date) data.date=getRealDate(data.date, region.timezone);
+            if (data.time) data.time=getRealTime(data.time, region.timezone);
             return data;
-        } catch(err){ if (model===GROQ_MODELS[GROQ_MODELS.length-1]) logError('Groq parsing failed',err); }
+        } catch(err){
+            console.error(`Groq failed [${model}]:`, err.response?.data || err.message);
+            if (model===GROQ_MODELS[GROQ_MODELS.length-1]){
+                logError('Groq parsing failed - all models', err.response?.data || err);
+            }
+        }
     }
     return { role:'chat' };
 }
@@ -362,82 +400,75 @@ async function endRideForUser(phoneJid, userPhoneKey, normKey, region){
 }
 
 async function handleRideLogic(phoneJid, text, realPhone) {
-    const rawText = cleanText(text); 
-    if (!rawText) return; 
-    const lowerText = rawText.toLowerCase().trim(); 
-    const normKey = canonicalPhone(realPhone, phoneJid); 
+    const rawText = cleanText(text);
+    if (!rawText) return;
+    const lowerText = rawText.toLowerCase().trim();
+    const normKey = canonicalPhone(realPhone, phoneJid);
     if (!normKey) return;
 
-    const region = detectUserRegion(normKey); 
+    const region = detectUserRegion(normKey);
     const session = getSession(normKey);
 
     try {
-        // 1. Ratings Processing
         const ratingSession = ratingSessions.get(normKey);
         if (ratingSession) {
             const looksLikeNewRide = lowerText.includes('need a ride') || lowerText.includes('need ride') || (lowerText.includes('from ') && lowerText.includes(' to ')) || lowerText.includes('miles');
             if (!looksLikeNewRide && rawText.length <= 30) {
                 const rating = parseRating(lowerText);
-                if (rating) { 
-                    const newAverage = await addRatingToUser(ratingSession.other, rating); 
-                    ratingSessions.delete(normKey); 
-                    ratingSessions.delete(normalizePhone(ratingSession.other)); 
-                    await sendWhatsAppMessage(phoneJid, `Rating saved! You rated ${rating} ★ for trip ${ratingSession.rideId}. Their new average is ${newAverage.toFixed(1)} ★.\n\nNeed another? Say: Need a ride`); 
-                    return; 
+                if (rating) {
+                    const newAverage = await addRatingToUser(ratingSession.other, rating);
+                    ratingSessions.delete(normKey);
+                    ratingSessions.delete(normalizePhone(ratingSession.other));
+                    await sendWhatsAppMessage(phoneJid, `Rating saved! You rated ${rating} ★ for trip ${ratingSession.rideId}. Their new average is ${newAverage.toFixed(1)} ★.\n\nNeed another? Say: Need a ride`);
+                    return;
                 }
-                if (lowerText === 'skip' || lowerText === 'no') { 
-                    ratingSessions.delete(normKey); 
-                    await sendWhatsAppMessage(phoneJid, 'Skipped rating. Need another? Say: Need a ride'); 
-                    return; 
+                if (lowerText === 'skip' || lowerText === 'no') {
+                    ratingSessions.delete(normKey);
+                    await sendWhatsAppMessage(phoneJid, 'Skipped rating. Need another? Say: Need a ride');
+                    return;
                 }
-                if (['thanks', 'thank you', 'thankyou', 'thx'].includes(lowerText)) { 
-                    await sendWhatsAppMessage(phoneJid, 'You are welcome! Please rate your last trip 1-5 or say skip.'); 
-                    return; 
+                if (['thanks', 'thank you', 'thankyou', 'thx'].includes(lowerText)) {
+                    await sendWhatsAppMessage(phoneJid, 'You are welcome! Please rate your last trip 1-5 or say skip.');
+                    return;
                 }
-            } else { 
-                ratingSessions.delete(normKey); 
+            } else {
+                ratingSessions.delete(normKey);
             }
         }
 
-        // 2. Active Chat Forwarding
         if (activeChats.has(normKey)) {
-            const control = parseDirectCommand(rawText); 
+            const control = parseDirectCommand(rawText);
             const controlWords = ['end ride', 'end trip', 'complete', 'done', 'finish', 'need a ride', 'online', 'offline'];
-            const isControl = !!control || controlWords.some(word => lowerText === word || lowerText.startsWith(`${word} `));
-            if (!isControl) { 
-                if (await checkAndForwardChat(phoneJid, rawText, normKey)) return; 
+            const isControl =!!control || controlWords.some(word => lowerText === word || lowerText.startsWith(`${word} `));
+            if (!isControl) {
+                if (await checkAndForwardChat(phoneJid, rawText, normKey)) return;
             }
         }
 
-        // 3. Numeric Take & Command Parsing
         if (/^\d+$/.test(lowerText)) { await takeRide(phoneJid, normKey, Number(lowerText), region); return; }
         if (/^take\s+\d+$/i.test(lowerText)) { await takeRide(phoneJid, normKey, Number(lowerText.replace(/\D/g, '')), region); return; }
 
         const direct = parseDirectCommand(rawText);
-        if (direct) { 
-            if (direct.command === 'TAKE') await takeRide(phoneJid, normKey, direct.takeId, region); 
-            else await handleDirectCommand(direct, phoneJid, normKey, normKey, region); 
-            return; 
+        if (direct) {
+            if (direct.command === 'TAKE') await takeRide(phoneJid, normKey, direct.takeId, region);
+            else await handleDirectCommand(direct, phoneJid, normKey, normKey, region);
+            return;
         }
-        if (lowerText === 'next' || lowerText === 'more' || lowerText === 'next page') { 
-            await handleDirectCommand({ command: 'NEXT' }, phoneJid, normKey, normKey, region); 
-            return; 
+        if (lowerText === 'next' || lowerText === 'more' || lowerText === 'next page') {
+            await handleDirectCommand({ command: 'NEXT' }, phoneJid, normKey, normKey, region);
+            return;
         }
 
-        // 4. Sequential Step-by-Step Draft Machine
         const draft = session.draft || {};
 
         if (draft.role === 'rider') {
-            // Stage A: Asking for origin
-            if (!draft.from && isValidLocation(rawText) && !getRealTime(rawText, region.timezone)) {
+            if (!draft.from && isValidLocation(rawText) &&!getRealTime(rawText, region.timezone)) {
                 draft.from = rawText;
                 session.draft = draft;
                 await sendWhatsAppMessage(phoneJid, `Got it, from ${rawText} -- where to? Example: ${region.exampleDest}`);
                 return;
             }
-
-            // Stage B: Origin saved, waiting for destination
-            if (draft.from && !draft.to && isValidLocation(rawText) && !getRealTime(rawText, region.timezone)) {
+            if (draft.from &&!draft.to && isValidLocation(rawText) &&!getRealTime(rawText, region.timezone)) {
                 if (locationsEqual(draft.from, rawText)) {
                     await sendWhatsAppMessage(phoneJid, `From and to cannot be the same (${draft.from}). Where to?`);
                     return;
@@ -447,9 +478,7 @@ async function handleRideLogic(phoneJid, text, realPhone) {
                 await sendWhatsAppMessage(phoneJid, `Got it, ${draft.from} -> ${rawText}. What time? Example: 5pm or now`);
                 return;
             }
-
-            // Stage C: Origin and Destination set, waiting for time
-            if (draft.from && draft.to && !draft.time) {
+            if (draft.from && draft.to &&!draft.time) {
                 const parsedTime = getRealTime(rawText, region.timezone);
                 if (parsedTime) {
                     const time = parsedTime;
@@ -459,17 +488,17 @@ async function handleRideLogic(phoneJid, text, realPhone) {
                     const rideRequest = await RideRequest.createCustom(normKey, { from: draft.from, to: draft.to, time, date, seats });
                     const displayDate = toDisplayDate(date, region.timezone);
 
-                    await sendWhatsAppMessage(phoneJid, `RIDE ${rideRequest.id} CREATED\n${rideRequest.from} -> ${rideRequest.to} ${toDisplayTime(rideRequest.time)} ${displayDate} • ${seats} ${seats === 1 ? 'person' : 'people'}\nAlerting drivers...`);
+                    await sendWhatsAppMessage(phoneJid, `RIDE ${rideRequest.id} CREATED\n${rideRequest.from} -> ${rideRequest.to} ${toDisplayTime(rideRequest.time)} ${displayDate} • ${seats} ${seats === 1? 'person' : 'people'}\nAlerting drivers...`);
 
                     const drivers = await User.findAll({ where: { isOnline: true, onlineUntil: { [Op.gt]: new Date() } } });
                     const notified = new Set();
                     for (const driver of drivers) {
                         const driverPhone = normalizePhone(driver.phone);
                         if (!driverPhone || driverPhone === normKey || notified.has(driverPhone)) continue;
-                        const locationMatch = !driver.location || areLocationsNearby(driver.location, rideRequest.from) || areLocationsNearby(driver.location, rideRequest.to);
+                        const locationMatch =!driver.location || areLocationsNearby(driver.location, rideRequest.from) || areLocationsNearby(driver.location, rideRequest.to);
                         if (!locationMatch) continue;
                         notified.add(driverPhone);
-                        await sendWhatsAppMessage(driverPhone, `NEW RIDE MATCH: ${rideRequest.id}\n${rideRequest.from} -> ${rideRequest.to} | ${toDisplayTime(rideRequest.time)} ${displayDate} • ${seats} ${seats === 1 ? 'person' : 'people'}\nReply ${rideRequest.id} to take`);
+                        await sendWhatsAppMessage(driverPhone, `NEW RIDE MATCH: ${rideRequest.id}\n${rideRequest.from} -> ${rideRequest.to} | ${toDisplayTime(rideRequest.time)} ${displayDate} • ${seats} ${seats === 1? 'person' : 'people'}\nReply ${rideRequest.id} to take`);
                     }
                     clearSession(normKey);
                     return;
@@ -477,120 +506,119 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             }
         }
 
-        // 5. Fallback to AI Classification for conversational or multi-entity phrases
         const ai = await parseWithAI(rawText, region, session.draft || {});
 
-        if (ai.role === 'chat') { 
-            const reply = await answerGeneralQuestion(rawText, region, session.draft?.from); 
-            await sendWhatsAppMessage(phoneJid, reply || "Hello! I'm Induu — matching riders and drivers in seconds. Just text me your trip."); 
-            return; 
+        if (ai.role === 'chat') {
+            const reply = await answerGeneralQuestion(rawText, region, session.draft?.from);
+            await sendWhatsAppMessage(phoneJid, reply || "Hello! I'm Induu — matching riders and drivers in seconds. Just text me your trip.");
+            return;
         }
 
         if (ai.role === 'driver') {
-            let from = ai.from || draft.from || null; 
-            let to = ai.to || draft.to || null; 
-            if (from && !isValidLocation(from)) from = null; 
-            if (to && !isValidLocation(to)) to = null;
+            let from = ai.from || draft.from || null;
+            let to = ai.to || draft.to || null;
+            if (from &&!isValidLocation(from)) from = null;
+            if (to &&!isValidLocation(to)) to = null;
 
-            if (!from && isValidLocation(rawText) && !isCommandPhrase(rawText)) from = rawText;
-            if (!from) { 
-                session.draft = { role: 'driver' }; 
-                await sendWhatsAppMessage(phoneJid, `Where are you driving from? Example: ${region.examplePlaces}`); 
-                return; 
+            if (!from && isValidLocation(rawText) &&!isCommandPhrase(rawText)) from = rawText;
+            if (!from) {
+                session.draft = { role: 'driver' };
+                await sendWhatsAppMessage(phoneJid, `Where are you driving from? Example: ${region.examplePlaces}`);
+                return;
             }
 
-            if (!to) { 
-                session.draft = { role: 'driver', from }; 
-                await sendWhatsAppMessage(phoneJid, `Got it, driving from ${from} -- where to? Example: ${region.exampleDest}`); 
-                return; 
+            if (!to) {
+                session.draft = { role: 'driver', from };
+                await sendWhatsAppMessage(phoneJid, `Got it, driving from ${from} -- where to? Example: ${region.exampleDest}`);
+                return;
             }
 
-            if (locationsEqual(from, to)) { 
-                session.draft = { role: 'driver', from, to: null }; 
-                await sendWhatsAppMessage(phoneJid, `From and to cannot be the same (${from}). Where are you driving to?`); 
-                return; 
+            if (locationsEqual(from, to)) {
+                session.draft = { role: 'driver', from, to: null };
+                await sendWhatsAppMessage(phoneJid, `From and to cannot be the same (${from}). Where are you driving to?`);
+                return;
             }
 
-            const user = await User.getOrCreate(normKey); 
-            await user.setOnline(from, DRIVER_ONLINE_HOURS); 
-            user.filterFrom = from; 
+            const user = await User.getOrCreate(normKey);
+            await user.setOnline(from, DRIVER_ONLINE_HOURS);
+            user.filterFrom = from;
             await user.save();
 
-            const rides = await getOpenRides(); 
-            const matching = rides.filter(ride => !isPollutedRide(ride) && routeMatches(from, to, ride.from, ride.to));
+            const rides = await getOpenRides();
+            const matching = rides.filter(ride =>!isPollutedRide(ride) && routeMatches(from, to, ride.from, ride.to));
 
-            await sendWhatsAppMessage(phoneJid, matching.length ? `You're online: ${from} → ${to} • ${matching.length} matching ride${matching.length === 1 ? '' : 's'}` : `You're online: ${from} → ${to} • No matching rides right now.`);
-            await sendRidesList(phoneJid, matching, `${matching.length} RIDES MATCHING ${from.toUpperCase()} -> ${to.toUpperCase()}:`, 0, region.timezone); 
-            clearSession(normKey); 
+            await sendWhatsAppMessage(phoneJid, matching.length? `You're online: ${from} → ${to} • ${matching.length} matching ride${matching.length === 1? '' : 's'}` : `You're online: ${from} → ${to} • No matching rides right now.`);
+            await sendRidesList(phoneJid, matching, `${matching.length} RIDES MATCHING ${from.toUpperCase()} -> ${to.toUpperCase()}:`, 0, region.timezone);
+            clearSession(normKey);
             return;
         }
 
         if (ai.role === 'rider') {
-            let from = ai.from || draft.from || null; 
-            let to = ai.to || draft.to || null; 
-            let time = ai.time || draft.time || null; 
-            let date = ai.date || draft.date || null; 
+            let from = ai.from || draft.from || null;
+            let to = ai.to || draft.to || null;
+            let time = ai.time || draft.time || null;
+            let date = ai.date || draft.date || null;
             let seats = ai.seats || draft.seats || null;
 
-            if (from && !isValidLocation(from)) from = null; 
-            if (to && !isValidLocation(to)) to = null;
+            if (from &&!isValidLocation(from)) from = null;
+            if (to &&!isValidLocation(to)) to = null;
 
-            if (['need a ride', 'i need a ride', 'need ride', 'i need ride'].includes(lowerText)) { 
-                session.draft = { role: 'rider', seats }; 
-                await sendWhatsAppMessage(phoneJid, `Where are you riding from? Example: ${region.examplePlaces}`); 
-                return; 
+            if (['need a ride', 'i need a ride', 'need ride', 'i need ride'].includes(lowerText)) {
+                session.draft = { role: 'rider', seats };
+                await sendWhatsAppMessage(phoneJid, `Where are you riding from? Example: ${region.examplePlaces}`);
+                return;
             }
 
-            if (!from) { 
-                session.draft = { role: 'rider', seats }; 
-                await sendWhatsAppMessage(phoneJid, `Where are you riding from? Example: ${region.examplePlaces}`); 
-                return; 
+            if (!from) {
+                session.draft = { role: 'rider', seats };
+                await sendWhatsAppMessage(phoneJid, `Where are you riding from? Example: ${region.examplePlaces}`);
+                return;
             }
 
-            if (!to) { 
-                session.draft = { role: 'rider', from, seats }; 
-                await sendWhatsAppMessage(phoneJid, `Got it, from ${from} -- where to? Example: ${region.exampleDest}`); 
-                return; 
+            if (!to) {
+                session.draft = { role: 'rider', from, seats };
+                await sendWhatsAppMessage(phoneJid, `Got it, from ${from} -- where to? Example: ${region.exampleDest}`);
+                return;
             }
 
-            if (!time) { 
-                session.draft = { role: 'rider', from, to, date, seats }; 
-                await sendWhatsAppMessage(phoneJid, 'What time? Example: 5pm or now'); 
-                return; 
+            if (!time) {
+                session.draft = { role: 'rider', from, to, date, seats };
+                await sendWhatsAppMessage(phoneJid, 'What time? Example: 5pm or now');
+                return;
             }
 
-            if (!date) date = getRealDate('today', region.timezone); 
+            if (!date) date = getRealDate('today', region.timezone);
             seats = clampInteger(seats, 1, MAX_SEATS, 1);
 
-            const rideRequest = await RideRequest.createCustom(normKey, { from, to, time, date, seats }); 
+            const rideRequest = await RideRequest.createCustom(normKey, { from, to, time, date, seats });
             const displayDate = toDisplayDate(date, region.timezone);
 
-            await sendWhatsAppMessage(phoneJid, `RIDE ${rideRequest.id} CREATED\n${rideRequest.from} -> ${rideRequest.to} ${toDisplayTime(rideRequest.time)} ${displayDate} • ${seats} ${seats === 1 ? 'person' : 'people'}\nAlerting drivers...`);
+            await sendWhatsAppMessage(phoneJid, `RIDE ${rideRequest.id} CREATED\n${rideRequest.from} -> ${rideRequest.to} ${toDisplayTime(rideRequest.time)} ${displayDate} • ${seats} ${seats === 1? 'person' : 'people'}\nAlerting drivers...`);
 
-            const drivers = await User.findAll({ where: { isOnline: true, onlineUntil: { [Op.gt]: new Date() } } }); 
+            const drivers = await User.findAll({ where: { isOnline: true, onlineUntil: { [Op.gt]: new Date() } } });
             const notified = new Set();
             for (const driver of drivers) {
-                const driverPhone = normalizePhone(driver.phone); 
-                if (!driverPhone || driverPhone === normKey || notified.has(driverPhone)) continue; 
-                const locationMatch = !driver.location || areLocationsNearby(driver.location, rideRequest.from) || areLocationsNearby(driver.location, rideRequest.to); 
-                if (!locationMatch) continue; 
-                notified.add(driverPhone); 
-                await sendWhatsAppMessage(driverPhone, `NEW RIDE MATCH: ${rideRequest.id}\n${rideRequest.from} -> ${rideRequest.to} | ${toDisplayTime(rideRequest.time)} ${displayDate} • ${seats} ${seats === 1 ? 'person' : 'people'}\nReply ${rideRequest.id} to take`);
+                const driverPhone = normalizePhone(driver.phone);
+                if (!driverPhone || driverPhone === normKey || notified.has(driverPhone)) continue;
+                const locationMatch =!driver.location || areLocationsNearby(driver.location, rideRequest.from) || areLocationsNearby(driver.location, rideRequest.to);
+                if (!locationMatch) continue;
+                notified.add(driverPhone);
+                await sendWhatsAppMessage(driverPhone, `NEW RIDE MATCH: ${rideRequest.id}\n${rideRequest.from} -> ${rideRequest.to} | ${toDisplayTime(rideRequest.time)} ${displayDate} • ${seats} ${seats === 1? 'person' : 'people'}\nReply ${rideRequest.id} to take`);
             }
-            clearSession(normKey); 
+            clearSession(normKey);
             return;
         }
 
-        if (ai.role === 'command' || ai.command) { 
-            await handleDirectCommand({ command: ai.command, filter: ai.filter, takeId: ai.takeId }, phoneJid, normKey, normKey, region); 
-            return; 
+        if (ai.role === 'command' || ai.command) {
+            await handleDirectCommand({ command: ai.command, filter: ai.filter, takeId: ai.takeId }, phoneJid, normKey, normKey, region);
+            return;
         }
 
-        const reply = await answerGeneralQuestion(rawText, region, session.draft?.from); 
+        const reply = await answerGeneralQuestion(rawText, region, session.draft?.from);
         await sendWhatsAppMessage(phoneJid, reply || "Hello! I'm Induu — matching riders and drivers in seconds. Just text me your trip.");
-    } catch (err) { 
-        logError(`Error in handleRideLogic [${normKey}]`, err); 
-        await sendWhatsAppMessage(phoneJid, 'Sorry, something went wrong while processing that. Please try again.'); 
+    } catch (err) {
+        logError(`Error in handleRideLogic [${normKey}]`, err);
+        await sendWhatsAppMessage(phoneJid, 'Sorry, something went wrong while processing that. Please try again.');
     }
 }
 
@@ -609,7 +637,7 @@ function registerMessageHandler(socket){
             try{
                 if (!msg?.message) continue; if (msg.key?.fromMe) continue; const remoteJid=msg.key?.remoteJid||''; if (!remoteJid) continue; if (remoteJid==='status@broadcast') continue; if (remoteJid.includes('@g.us')) continue;
                 const text=extractMessageText(msg.message); if (!text) continue; let realPhone=remoteJid;
-                if (remoteJid.includes('@lid')){ if (msg.key?.participant && !msg.key.participant.includes('@lid')) realPhone=msg.key.participant; else if (msg.key?.remoteJidAlt && !msg.key.remoteJidAlt.includes('@lid')) realPhone=msg.key.remoteJidAlt; }
+                if (remoteJid.includes('@lid')){ if (msg.key?.participant &&!msg.key.participant.includes('@lid')) realPhone=msg.key.participant; else if (msg.key?.remoteJidAlt &&!msg.key.remoteJidAlt.includes('@lid')) realPhone=msg.key.remoteJidAlt; }
                 const phone=canonicalPhone(realPhone, remoteJid); if (!phone) continue;
                 console.log(`MSG ${phone}: ${cleanText(text,500)}`); await queueUserMessage(phone, ()=>handleRideLogic(remoteJid, text, phone));
             } catch(err){ if (String(err?.message||'').includes('Bad MAC')) continue; logError('Message handling error',err); }
@@ -630,13 +658,13 @@ async function startWhatsApp(){
                 const code=lastDisconnect?.error?.output?.statusCode; if (sock===newSocket) sock=null; qrLast=null; startingWhatsApp=false;
                 const loggedOut=code===DisconnectReason.loggedOut || code===401;
                 if (loggedOut){ try{ if (fs.existsSync(AUTH_PATH)) fs.rmSync(AUTH_PATH,{ recursive:true, force:true }); } catch(err){ logError('Auth cleanup failed',err); } }
-                if (!reconnectTimer && !shuttingDown){ reconnectTimer=setTimeout(()=>{ reconnectTimer=null; startWhatsApp().catch(err=>logError('Reconnect failed',err)); }, RECONNECT_DELAY_MS); }
+                if (!reconnectTimer &&!shuttingDown){ reconnectTimer=setTimeout(()=>{ reconnectTimer=null; startWhatsApp().catch(err=>logError('Reconnect failed',err)); }, RECONNECT_DELAY_MS); }
             }
         });
         registerMessageHandler(newSocket);
     } catch(err){
         startingWhatsApp=false; sock=null; logError('WhatsApp startup error',err);
-        if (!reconnectTimer && !shuttingDown){ reconnectTimer=setTimeout(()=>{ reconnectTimer=null; startWhatsApp().catch(error=>logError('Retry startup failed',error)); }, RECONNECT_DELAY_MS); }
+        if (!reconnectTimer &&!shuttingDown){ reconnectTimer=setTimeout(()=>{ reconnectTimer=null; startWhatsApp().catch(error=>logError('Retry startup failed',error)); }, RECONNECT_DELAY_MS); }
     }
 }
 
