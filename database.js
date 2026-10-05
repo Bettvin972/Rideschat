@@ -7,7 +7,7 @@ const DB_DIALECT = process.env.DB_DIALECT || (DATABASE_URL? undefined : 'sqlite'
 const DB_STORAGE = process.env.DB_STORAGE || 'induu.sqlite';
 
 const sequelize = DATABASE_URL
- ? new Sequelize(DATABASE_URL, {
+? new Sequelize(DATABASE_URL, {
       dialect: DB_DIALECT,
       logging: process.env.DB_LOGGING === 'true'? console.log : false,
       pool: { max: 10, min: 0, acquire: 30000, idle: 10000 },
@@ -54,7 +54,7 @@ const RideRequest = sequelize.define('RideRequest', {
   time: { type: DataTypes.STRING(5), allowNull: false },
   seats: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 1, validate: { min: 1, max: 6 } },
   passengerCount: { type: DataTypes.INTEGER, allowNull: true },
-  status: { type: DataTypes.ENUM('OPEN', 'TAKEN', 'COMPLETED', 'CANCELLED', 'EXPIRED'), allowNull: false, defaultValue: 'OPEN' },
+  status: { type: DataTypes.STRING, allowNull: false, defaultValue: 'OPEN' },
   takenAt: { type: DataTypes.DATE, allowNull: true },
   completedAt: { type: DataTypes.DATE, allowNull: true },
   cancelledAt: { type: DataTypes.DATE, allowNull: true },
@@ -79,7 +79,7 @@ const RideOffer = sequelize.define('RideOffer', {
   date: { type: DataTypes.STRING(10), allowNull: true },
   time: { type: DataTypes.STRING(5), allowNull: true },
   seats: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 1 },
-  status: { type: DataTypes.ENUM('ACTIVE', 'FULL', 'CANCELLED', 'EXPIRED'), allowNull: false, defaultValue: 'ACTIVE' },
+  status: { type: DataTypes.STRING, allowNull: false, defaultValue: 'ACTIVE' },
   metadata: { type: DataTypes.JSON, allowNull: true },
 }, {
   indexes: [
@@ -188,7 +188,9 @@ User.getOrCreate = async function getOrCreate(phone) {
 
 async function initDatabase() {
   await sequelize.authenticate();
-  await sequelize.sync({ alter: process.env.DB_ALLOW_ALTER!== 'false' });
+  // FIX: Never use alter:true on Postgres with ENUM -> causes cast error. Use false.
+  const shouldAlter = process.env.DB_ALLOW_ALTER === 'true';
+  await sequelize.sync({ alter: shouldAlter });
   return sequelize;
 }
 async function createRideSafely(phone, data, transaction = undefined) {
