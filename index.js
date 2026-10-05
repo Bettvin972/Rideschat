@@ -785,6 +785,102 @@ function parseDirectCommand(text) {
   if (take) return { command: 'TAKE', takeId: Number(take[1]) };
   return null;
       }
+}
+
+async function handleDirectCommand(cmd, phoneJid, userPhoneKey, region) {
+  if (!cmd?.command) return;
+  const command = cmd.command;
+  if (command === 'NEXT') {
+    const session = getSession(userPhoneKey);
+    if (!session.ridesList?.length) {
+      await sendWhatsAppMessage(phoneJid, 'No active ride list. Say ONLINE to see available rides.');
+      return;
+    }
+    const totalPages = Math.max(1, Math.ceil(session.ridesList.length / PAGE_SIZE));
+    let nextPage = (session.ridesPage || 0) + 1;
+    if (nextPage >= totalPages) nextPage = 0;
+    await sendRidesList(phoneJid, session.ridesList, session.lastTitle, nextPage, region.timezone);
+    return;
+  }
+  if (command === 'OFFLINE') {
+    const user = await User.getOrCreate(userPhoneKey);
+    await user.setOffline();
+    const session = getSession(userPhoneKey);
+    session.draft = {};
+    await sendWhatsAppMessage(phoneJid, `You are offline. ${getTimeGreeting(region.timezone)}!`);
+    return;
+  }
+  if (command === 'ONLINE') {
+    const user = await User.getOrCreate(userPhoneKey);
+    let filter = null;
+    let location = user.location || region.defaultCity;
+    if (cmd.filter && isValidLocation(cmd.filter)) {
+      filter = cmd.filter.replace(/^in\s+/i, '').trim();
+      location = filter;
+    }
+    await user.setOnline(location, DRIVER_ONLINE_HOURS);
+    user.filterFrom = filter;
+    user.onlineDate = getLocalDateString(new Date(), region.timezone);
+    await user.save();
+    const rides = await getOpenRides();
+    const filtered = filter ? rides.filter(ride => !isPollutedRide(ride) && (areLocationsNearby(filter, ride.from) || areLocationsNearby(filter, ride.to))) : rides.filter(ride => !isPollutedRide(ride)));
+    await sendWhatsAppMessage(phoneJid, filter ? `ONLINE near ${filter}. Rating: ${Number(user.rating || 5).toFixed(1)}★` : `ONLINE. Rating: ${Number(user.rating || 5).toFixed(1)}★`);
+    await sendRidesList(phoneJid, filtered, filter ? `${filtered.length} RIDES NEAR ${filter.toUpperCase()}:` : `${filtered.length} OPEN RIDES:`, 0, region.timezone);
+    return;
+  }
+  if (command === 'CLEAR_FILTERS') {
+    const user = await User.getOrCreate(userPhoneKey);
+    user.filterFrom = null;
+    user.filterTo = null;
+    await user.save();
+    const rides = await getOpenRides();
+    await sendRidesList(phoneJid, rides, `${rides.length} OPEN RIDES:`, 0, region.timezone);
+    return;
+  }
+  if (command === 'FILTER') {
+    const filter = cleanText(cmd.filter, MAX_LOCATION_LENGTH);
+    if (!isValidLocation(filter)) {
+      await sendWhatsAppMessage(phoneJid, 'Please provide a valid location. Example: FILTER Nairobi');
+      return;
+    }
+    const user = await User.getOrCreate(userPhoneKey);
+    user.filterFrom = filter;
+    await user.save();
+    const rides = await getOpenRides();
+    const filtered = rides.filter(ride => !isPollutedRide(ride) && (areLocationsNearby(filter, ride.from) || areLocationsNearby(filter, ride.to)));
+    await sendRidesList(phoneJid, filtered, `${filtered.length} RIDES NEAR ${filter.toUpperCase()}:`, 0, region.timezone);
+    return;
+  }
+  if (command === 'SHOW_REQUESTS') {
+    const rides = await getOpenRides();
+    await sendRidesList(phoneJid, rides, `${rides.length} OPEN RIDES:`, 0, region.timezone);
+    return;
+  }
+  if (command === 'TAKE') {
+    await takeRide(phoneJid, userPhoneKey, Number(cmd.takeId), region);
+    return;
+  }
+  if (command === 'END_RIDE') {
+    await endRideForUser(phoneJid, userPhoneKey, region);
+    return;
+  }
+  if (command === 'CANCEL_RIDE') {
+    await cancelRideForUser(phoneJid, userPhoneKey);
+    return;
+  }
+  if (command === 'MY_RIDES') {
+    const requests = await RideRequest.findAll({ where: { phone: userPhoneKey }, order: [['createdAt', 'DESC']], limit: 10 });
+    if (!requests.length) {
+      await sendWhatsAppMessage(phoneJid, 'You have no recent ride requests.');
+      return;
+    }
+    let output = '*Your recent rides*\n\n';
+    for (const ride of requests) {
+      output += `ID ${ride.id} • ${ride.status}\n${ride.from} → ${ride.to}\n${toDisplayDate(ride.date, region.timezone)} • ${toDisplayTime(ride.time)}\n\n`;
+    }
+    await sendWhatsAppMessage(phoneJid, output.trim());
+    return;
+  }
   if (command === 'HELP') {
     await sendWhatsAppMessage(phoneJid,
       '*Induu commands*\n\nNeed a ride\nGive a ride from A to B\nONLINE [location]\nOFFLINE\nNEXT\nTAKE 123\nCANCEL RIDE\nMY RIDES\nEND RIDE\nPROFILE\nCLEAR\nHELP\n\nYou can also speak naturally, e.g. “Need a ride tomorrow from Juja to Nairobi at 5pm for 2 people.”');
@@ -792,11 +888,12 @@ function parseDirectCommand(text) {
   }
   if (command === 'PROFILE') {
     const user = await User.getOrCreate(userPhoneKey);
-    const status = user.isOnline && user.onlineUntil && new Date(user.onlineUntil) > new Date()? 'ONLINE' : 'OFFLINE';
+    const status = user.isOnline && user.onlineUntil && new Date(user.onlineUntil) > new Date() ? 'ONLINE' : 'OFFLINE';
     await sendWhatsAppMessage(phoneJid,
       `*Your profile*\nName: ${user.name || 'Not set'}\nRating: ${Number(user.rating || 5).toFixed(1)}★ (${user.ratingCount || 0})\nStatus: ${status}\nArea: ${user.location || 'Not set'}\n\nTo change your name: MY NAME IS Your Name`);
   }
 }
+
 
 async function handleNameMessage(phoneJid, phone, text) {
   const name = parseNameCommand(text);
