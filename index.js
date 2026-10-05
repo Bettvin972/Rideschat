@@ -1584,7 +1584,6 @@ process.on('uncaughtException', err => {
 
 bootstrap();
 
-// Exported for tests
 module.exports = {
   app,
   normalizePhone,
