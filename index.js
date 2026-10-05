@@ -22,7 +22,7 @@ const MAX_MESSAGE_LENGTH = 4000;
 const RECONNECT_DELAY_MS = 5000;
 const EXPIRY_INTERVAL_MS = 15 * 60 * 1000;
 const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
-const GROQ_MODELS = ['llama-3.1-8b-instant', 'llama-3.3-70b-versatile'];
+const GROQ_MODELS = ['openai/gpt-oss-20b'];
 
 let sock = null;
 let qrLast = null;
@@ -484,12 +484,9 @@ async function handleRideLogic(phoneJid, text, realPhone) {
                     const time = parsedTime;
                     const date = getRealDate('today', region.timezone);
                     const seats = clampInteger(draft.seats, 1, MAX_SEATS, 1);
-
                     const rideRequest = await RideRequest.createCustom(normKey, { from: draft.from, to: draft.to, time, date, seats });
                     const displayDate = toDisplayDate(date, region.timezone);
-
                     await sendWhatsAppMessage(phoneJid, `RIDE ${rideRequest.id} CREATED\n${rideRequest.from} -> ${rideRequest.to} ${toDisplayTime(rideRequest.time)} ${displayDate} • ${seats} ${seats === 1? 'person' : 'people'}\nAlerting drivers...`);
-
                     const drivers = await User.findAll({ where: { isOnline: true, onlineUntil: { [Op.gt]: new Date() } } });
                     const notified = new Set();
                     for (const driver of drivers) {
@@ -519,34 +516,28 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             let to = ai.to || draft.to || null;
             if (from &&!isValidLocation(from)) from = null;
             if (to &&!isValidLocation(to)) to = null;
-
             if (!from && isValidLocation(rawText) &&!isCommandPhrase(rawText)) from = rawText;
             if (!from) {
                 session.draft = { role: 'driver' };
                 await sendWhatsAppMessage(phoneJid, `Where are you driving from? Example: ${region.examplePlaces}`);
                 return;
             }
-
             if (!to) {
                 session.draft = { role: 'driver', from };
                 await sendWhatsAppMessage(phoneJid, `Got it, driving from ${from} -- where to? Example: ${region.exampleDest}`);
                 return;
             }
-
             if (locationsEqual(from, to)) {
                 session.draft = { role: 'driver', from, to: null };
                 await sendWhatsAppMessage(phoneJid, `From and to cannot be the same (${from}). Where are you driving to?`);
                 return;
             }
-
             const user = await User.getOrCreate(normKey);
             await user.setOnline(from, DRIVER_ONLINE_HOURS);
             user.filterFrom = from;
             await user.save();
-
             const rides = await getOpenRides();
             const matching = rides.filter(ride =>!isPollutedRide(ride) && routeMatches(from, to, ride.from, ride.to));
-
             await sendWhatsAppMessage(phoneJid, matching.length? `You're online: ${from} → ${to} • ${matching.length} matching ride${matching.length === 1? '' : 's'}` : `You're online: ${from} → ${to} • No matching rides right now.`);
             await sendRidesList(phoneJid, matching, `${matching.length} RIDES MATCHING ${from.toUpperCase()} -> ${to.toUpperCase()}:`, 0, region.timezone);
             clearSession(normKey);
@@ -559,42 +550,33 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             let time = ai.time || draft.time || null;
             let date = ai.date || draft.date || null;
             let seats = ai.seats || draft.seats || null;
-
             if (from &&!isValidLocation(from)) from = null;
             if (to &&!isValidLocation(to)) to = null;
-
             if (['need a ride', 'i need a ride', 'need ride', 'i need ride'].includes(lowerText)) {
                 session.draft = { role: 'rider', seats };
                 await sendWhatsAppMessage(phoneJid, `Where are you riding from? Example: ${region.examplePlaces}`);
                 return;
             }
-
             if (!from) {
                 session.draft = { role: 'rider', seats };
                 await sendWhatsAppMessage(phoneJid, `Where are you riding from? Example: ${region.examplePlaces}`);
                 return;
             }
-
             if (!to) {
                 session.draft = { role: 'rider', from, seats };
                 await sendWhatsAppMessage(phoneJid, `Got it, from ${from} -- where to? Example: ${region.exampleDest}`);
                 return;
             }
-
             if (!time) {
                 session.draft = { role: 'rider', from, to, date, seats };
                 await sendWhatsAppMessage(phoneJid, 'What time? Example: 5pm or now');
                 return;
             }
-
             if (!date) date = getRealDate('today', region.timezone);
             seats = clampInteger(seats, 1, MAX_SEATS, 1);
-
             const rideRequest = await RideRequest.createCustom(normKey, { from, to, time, date, seats });
             const displayDate = toDisplayDate(date, region.timezone);
-
             await sendWhatsAppMessage(phoneJid, `RIDE ${rideRequest.id} CREATED\n${rideRequest.from} -> ${rideRequest.to} ${toDisplayTime(rideRequest.time)} ${displayDate} • ${seats} ${seats === 1? 'person' : 'people'}\nAlerting drivers...`);
-
             const drivers = await User.findAll({ where: { isOnline: true, onlineUntil: { [Op.gt]: new Date() } } });
             const notified = new Set();
             for (const driver of drivers) {
