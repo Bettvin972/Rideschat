@@ -1,4 +1,4 @@
-require('dotenv').config();
+Require('dotenv').config();
 
 const express = require('express');
 const axios = require('axios');
@@ -574,11 +574,22 @@ async function notifyMatchingDrivers(ride, region) {
   }
 }
 
-async function takeRide(phoneJid, driverPhone, rideId, region) {
+async function takeRide(phoneJid, driverPhoneRaw, rideId, region) {
   try {
+    const driverPhone = canonicalPhone(driverPhoneRaw, phoneJid);
+    if (!driverPhone) {
+      await sendWhatsAppMessage(phoneJid, '⚠️ Unable to identify driver phone number.');
+      return;
+    }
+
+    const existingRide = await RideRequest.findByPk(rideId);
+    if (existingRide && existingRide.phone === driverPhone) {
+      await sendWhatsAppMessage(phoneJid, '⚠️ You cannot accept your own ride request.');
+      return;
+    }
+
     const result = await claimRideSafely(rideId, driverPhone);
     
-    // Check if result exists or if success flag is false
     if (!result || !result.success) {
       const errorMsg = result?.message || '⚠️ Could not accept this ride. It may have already been taken, cancelled, or does not exist.';
       await sendWhatsAppMessage(phoneJid, errorMsg);
