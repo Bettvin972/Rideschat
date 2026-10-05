@@ -176,6 +176,14 @@ async function initDatabase() {
     try { await sequelize.query(`ALTER TABLE "RideOffers" ADD COLUMN IF NOT EXISTS "date" VARCHAR(10);`).catch(() => {}); } catch (e) {}
     try { await sequelize.query(`ALTER TABLE "RideOffers" ADD COLUMN IF NOT EXISTS "time" VARCHAR(5);`).catch(() => {}); } catch (e) {}
     try { await sequelize.query(`ALTER TABLE "RideOffers" ADD COLUMN IF NOT EXISTS "metadata" JSON;`).catch(() => {}); } catch (e) {}
+
+    // Migrations for missing Users columns
+    try { await sequelize.query(`ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "location" VARCHAR(100);`).catch(() => {}); } catch (e) {}
+    try { await sequelize.query(`ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "filterFrom" VARCHAR(100);`).catch(() => {}); } catch (e) {}
+    try { await sequelize.query(`ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "filterTo" VARCHAR(100);`).catch(() => {}); } catch (e) {}
+    try { await sequelize.query(`ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "onlineDate" VARCHAR(10);`).catch(() => {}); } catch (e) {}
+    try { await sequelize.query(`ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "isOnline" BOOLEAN DEFAULT false;`).catch(() => {}); } catch (e) {}
+    try { await sequelize.query(`ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "onlineUntil" TIMESTAMPTZ;`).catch(() => {}); } catch (e) {}
     try { await sequelize.query(`ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "lastSeenAt" TIMESTAMPTZ;`).catch(() => {}); } catch (e) {}
   }
   return sequelize;
