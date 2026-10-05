@@ -79,26 +79,29 @@ User.getOrCreate=async function(phone){const key=normalizePhone(phone);if(!key)t
 
 async function initDatabase(){
   await sequelize.authenticate();
-  // --- FIX for existing Postgres DB with ENUM ---
-  if(DATABASE_URL){
-    try{
-      // Convert ENUM to VARCHAR if still ENUM (fixes "cannot be cast to enum" error)
-      await sequelize.query(`ALTER TABLE "RideRequests" ALTER COLUMN "status" TYPE VARCHAR USING "status"::text;`).catch(()=>{});
-      await sequelize.query(`ALTER TABLE "RideOffers" ALTER COLUMN "status" TYPE VARCHAR USING "status"::text;`).catch(()=>{});
-      // Add missing columns if not exist (fixes "expiresAt does not exist")
-      await sequelize.query(`ALTER TABLE "RideRequests" ADD COLUMN IF NOT EXISTS "expiresAt" TIMESTAMPTZ;`).catch(()=>{});
-      await sequelize.query(`ALTER TABLE "RideRequests" ADD COLUMN IF NOT EXISTS "passengerCount" INTEGER;`).catch(()=>{});
-      await sequelize.query(`ALTER TABLE "RideRequests" ADD COLUMN IF NOT EXISTS "takenAt" TIMESTAMPTZ;`).catch(()=>{});
-      await sequelize.query(`ALTER TABLE "RideRequests" ADD COLUMN IF NOT EXISTS "completedAt" TIMESTAMPTZ;`).catch(()=>{});
-      await sequelize.query(`ALTER TABLE "RideRequests" ADD COLUMN IF NOT EXISTS "cancelledAt" TIMESTAMPTZ;`).catch(()=>{});
-      await sequelize.query(`ALTER TABLE "RideRequests" ADD COLUMN IF NOT EXISTS "timezone" VARCHAR(64) DEFAULT 'America/Chicago';`).catch(()=>{});
-      await sequelize.query(`ALTER TABLE "RideRequests" ADD COLUMN IF NOT EXISTS "metadata" JSON;`).catch(()=>{});
-      await sequelize.query(`ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "lastSeenAt" TIMESTAMPTZ;`).catch(()=>{});
-    }catch(e){console.log('Migration warning:',e.message);}
-  }
+  // 1. Create tables if they don't exist first
   await sequelize.sync({ alter: false });
+
+  // 2. Then fix old Postgres tables that still have ENUM or missing columns
+  if(DATABASE_URL){
+    try{ await sequelize.query(`ALTER TABLE "RideRequests" ALTER COLUMN "status" TYPE VARCHAR USING "status"::text;`).catch(()=>{}); }catch(e){}
+    try{ await sequelize.query(`ALTER TABLE "RideOffers" ALTER COLUMN "status" TYPE VARCHAR USING "status"::text;`).catch(()=>{}); }catch(e){}
+    try{ await sequelize.query(`ALTER TABLE "RideRequests" ADD COLUMN IF NOT EXISTS "expiresAt" TIMESTAMPTZ;`).catch(()=>{}); }catch(e){}
+    try{ await sequelize.query(`ALTER TABLE "RideRequests" ADD COLUMN IF NOT EXISTS "passengerCount" INTEGER;`).catch(()=>{}); }catch(e){}
+    try{ await sequelize.query(`ALTER TABLE "RideRequests" ADD COLUMN IF NOT EXISTS "takenAt" TIMESTAMPTZ;`).catch(()=>{}); }catch(e){}
+    try{ await sequelize.query(`ALTER TABLE "RideRequests" ADD COLUMN IF NOT EXISTS "completedAt" TIMESTAMPTZ;`).catch(()=>{}); }catch(e){}
+    try{ await sequelize.query(`ALTER TABLE "RideRequests" ADD COLUMN IF NOT EXISTS "cancelledAt" TIMESTAMPTZ;`).catch(()=>{}); }catch(e){}
+    try{ await sequelize.query(`ALTER TABLE "RideRequests" ADD COLUMN IF NOT EXISTS "timezone" VARCHAR(64) DEFAULT 'America/Chicago';`).catch(()=>{}); }catch(e){}
+    try{ await sequelize.query(`ALTER TABLE "RideRequests" ADD COLUMN IF NOT EXISTS "metadata" JSON;`).catch(()=>{}); }catch(e){}
+    try{ await sequelize.query(`ALTER TABLE "RideOffers" ADD COLUMN IF NOT EXISTS "status" VARCHAR DEFAULT 'ACTIVE';`).catch(()=>{}); }catch(e){}
+    try{ await sequelize.query(`ALTER TABLE "RideOffers" ADD COLUMN IF NOT EXISTS "date" VARCHAR(10);`).catch(()=>{}); }catch(e){}
+    try{ await sequelize.query(`ALTER TABLE "RideOffers" ADD COLUMN IF NOT EXISTS "time" VARCHAR(5);`).catch(()=>{}); }catch(e){}
+    try{ await sequelize.query(`ALTER TABLE "RideOffers" ADD COLUMN IF NOT EXISTS "metadata" JSON;`).catch(()=>{}); }catch(e){}
+    try{ await sequelize.query(`ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "lastSeenAt" TIMESTAMPTZ;`).catch(()=>{}); }catch(e){}
+  }
   return sequelize;
 }
+
 async function createRideSafely(phone,data,transaction=undefined){const input=normalizeRideInput(phone,data);const errors=validateRideInput(input);if(errors.length){const error=new Error(`Ride validation failed: ${errors.join(', ')}`);error.code='RIDE_VALIDATION';error.details=errors;throw error;}const existing=await RideRequest.findOne({where:{phone:input.phone,status:'OPEN',from:input.from,to:input.to,date:input.date,time:input.time},transaction,});if(existing)return existing;return RideRequest.create(input,{transaction});}
 async function claimRideSafely(rideId,driverPhone){const driver=normalizePhone(driverPhone);if(!driver)return null;const[count]=await RideRequest.update({status:'TAKEN',driverPhone:driver,takenAt:new Date()},{where:{id:rideId,status:'OPEN',phone:{[Op.ne]:driver}}});if(count!==1)return null;return RideRequest.findByPk(rideId);}
 async function completeRideSafely(rideId,actorPhone){const actor=normalizePhone(actorPhone);if(!actor)return null;const[count]=await RideRequest.update({status:'COMPLETED',completedAt:new Date()},{where:{id:rideId,status:'TAKEN',[Op.or]:[{phone:actor},{driverPhone:actor}]}});return count===1?RideRequest.findByPk(rideId):null;}
@@ -106,6 +109,19 @@ async function cancelRideSafely(rideId,actorPhone){const actor=normalizePhone(ac
 async function findUserActiveRide(phone){const key=normalizePhone(phone);if(!key)return null;return RideRequest.findOne({where:{status:'TAKEN',[Op.or]:[{phone:key},{driverPhone:key}]},order:[['updatedAt','DESC']]});}
 async function findUserOpenRequests(phone){const key=normalizePhone(phone);if(!key)return[];return RideRequest.findAll({where:{phone:key,status:'OPEN'},order:[['createdAt','DESC']]});}
 async function findMatchingRides(criteria={}){const where={status:'OPEN'};if(criteria.date)where.date=criteria.date;if(criteria.from)where.from={[Op.like]:`%${cleanLocation(criteria.from)}%`};if(criteria.to)where.to={[Op.like]:`%${cleanLocation(criteria.to)}%`};return RideRequest.findAll({where,order:[['createdAt','DESC']]});}
-async function cleanupDatabase(){const now=new Date();await RideRequest.update({status:'EXPIRED'},{where:{status:'OPEN',[Op.or]:[{expiresAt:{[Op.lte]:now}},{date:{[Op.lt]:now.toISOString().slice(0,10)}}]}});await RideOffer.update({status:'EXPIRED'},{where:{status:'ACTIVE',date:{[Op.lt]:now.toISOString().slice(0,10)}}});await User.update({isOnline:false,onlineUntil:null},{where:{isOnline:true,onlineUntil:{[Op.lte]:now}}});return{expired:0};}
+
+async function cleanupDatabase(){
+  const now = new Date();
+  try{
+    await RideRequest.update({ status: 'EXPIRED' }, { where: { status: 'OPEN', [Op.or]: [{ expiresAt: { [Op.lte]: now } }, { date: { [Op.lt]: now.toISOString().slice(0, 10) } }] } });
+  }catch(e){ console.log('cleanup RideRequest skipped:', e.message); }
+  try{
+    await RideOffer.update({ status: 'EXPIRED' }, { where: { status: 'ACTIVE' } });
+  }catch(e){ console.log('cleanup RideOffer skipped:', e.message); }
+  try{
+    await User.update({ isOnline: false, onlineUntil: null }, { where: { isOnline: true, onlineUntil: { [Op.lte]: now } } });
+  }catch(e){}
+  return { expired: 0 };
+}
 
 module.exports={sequelize,User,RideRequest,RideOffer,Op,initDatabase,cleanupDatabase,createRideSafely,claimRideSafely,completeRideSafely,cancelRideSafely,findUserActiveRide,findUserOpenRequests,findMatchingRides,normalizePhone,validateRideInput,};
