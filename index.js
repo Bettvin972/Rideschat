@@ -355,7 +355,7 @@ async function answerGeneralQuestion(q) {
         }, { headers: { "Authorization": `Bearer ${process.env.GROQ_API_KEY}` } });
         return res.data.choices[0].message.content.trim();
     } catch (e) { 
-        return "Hello! I'm Induu — matching riders and drivers in seconds. Just text me your trip."; 
+        return "Hello! Need a ride or want to offer one?\n\n- Say: *I need a ride*\n- Say: *Looking to offer ride*"; 
     }
 }
 
@@ -369,8 +369,8 @@ CLASSIFICATION & EXTRACTION LAWS:
    - CRITICAL: Intent statements without specific locations like "I need a ride", "Want a ride", "Need ride" MUST set "from": null and "to": null. NEVER extract intent phrases as locations!
    - If the active session draft is missing a "from" or "to" location, and the user input is a single place or phrase (e.g. "Bypass", "Juja", "Kikuyu"), extract that place accurately into the missing slot ("from" or "to").
 
-2. "driver": User offers or gives a ride (e.g. "Want to give ride", "driving to Nairobi", "I am a driver").
-   - CRITICAL: Phrases like "Want to give ride", "give ride" MUST set "from": null and "to": null unless explicit origins/destinations are stated.
+2. "driver": User offers or gives a ride (e.g. "Want to give ride", "looking to offer ride", "driving to Nairobi", "I am a driver").
+   - CRITICAL: Phrases like "Want to give ride", "offer ride", "give ride" MUST set "from": null and "to": null unless explicit origins/destinations are stated.
 
 3. "command": Precise control commands: ONLINE, OFFLINE, SHOW_REQUESTS, CLEAR_FILTERS, NEXT, TAKE [ID], FILTER [Location], END_RIDE.
 
@@ -420,7 +420,7 @@ async function handleRideLogic(phoneJid, text, realPhone) {
         const normKey = normalizePhone(userPhoneKey);
         const region = detectUserRegion(userPhoneKey);
 
-        // Rating flow
+        // 1. Rating flow
         let ratingSess = ratingSessions[normKey];
         if (ratingSess) {
             let rate = parseRating(lowerText);
@@ -439,21 +439,33 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             }
         }
 
-        // Active match messaging flow
+        // 2. Active match messaging flow
         if (activeChats[normKey]) {
             const isControlCmd = ['end ride', 'end trip', 'complete', 'done', 'finish'].some(c => lowerText.includes(c));
             if (!isControlCmd && await checkAndForwardChat(phoneJid, text, realPhone)) return;
         }
 
-        // Reset stale drafts on fresh request triggers
-        if (['i need a ride', 'want a ride', 'need ride', 'want to give ride', 'give ride', 'i am driving'].some(p => lowerText === p || lowerText.startsWith(p))) {
+        // 3. Fast-Path Local Intent Detection (Instant responses for exact command triggers)
+        const isRiderTrigger = ['i need a ride', 'want a ride', 'need ride', 'need a ride', 'find ride'].some(p => lowerText === p || lowerText.startsWith(p));
+        const isDriverTrigger = ['want to give ride', 'looking to offer ride', 'offer ride', 'give ride', 'i am driving', 'driving to'].some(p => lowerText === p || lowerText.startsWith(p));
+
+        if (isRiderTrigger) {
             clearSession(userPhoneKey);
+            let sess = getSession(userPhoneKey);
+            sess.draft = { role: 'rider' };
+            await sendGupshupMessage(phoneJid, 'Where are you riding from? Example: ' + region.examplePlaces);
+            return;
         }
 
-        let currentSess = getSession(userPhoneKey);
-        let ai = await parseWithAI(text, region, currentSess.draft || {});
+        if (isDriverTrigger) {
+            clearSession(userPhoneKey);
+            let sess = getSession(userPhoneKey);
+            sess.draft = { role: 'driver' };
+            await sendGupshupMessage(phoneJid, 'Where are you driving from? Example: ' + region.examplePlaces);
+            return;
+        }
 
-        // Direct Ride Acceptance by ID
+        // 4. Direct Ride Acceptance by ID
         if (/^\d+$/.test(lowerText) || lowerText.startsWith('take ')) {
             let rideId = parseInt(lowerText.replace(/[^0-9]/g, ''), 10);
             if (rideId) {
@@ -473,20 +485,31 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             }
         }
 
-        // Driver Flow
-        if (ai.role === 'driver') {
+        // 5. LLM Slot-Filling & Intent Resolution
+        let currentSess = getSession(userPhoneKey);
+        let ai = await parseWithAI(text, region, currentSess.draft || {});
+
+        // Driver Execution Path
+        if (ai.role === 'driver' || (currentSess.draft && currentSess.draft.role === 'driver')) {
             let draft = currentSess.draft || {};
             let from = ai.from || draft.from || null;
             let to = ai.to || draft.to || null;
 
-            currentSess.draft.role = 'driver';
+            if (!from && lowerText && !['hi', 'hello', 'hey'].includes(lowerText)) {
+                from = text.trim();
+            }
 
             if (!from) {
+                currentSess.draft = { role: 'driver' };
                 await sendGupshupMessage(phoneJid, 'Where are you driving from? Example: ' + region.examplePlaces);
                 return;
             }
 
-            currentSess.draft.from = from;
+            currentSess.draft = { role: 'driver', from: from };
+
+            if (!to && lowerText !== from.toLowerCase() && !['hi', 'hello', 'hey'].includes(lowerText)) {
+                to = text.trim();
+            }
 
             if (!to) {
                 await sendGupshupMessage(phoneJid, 'Got it, driving from ' + from + ' -- where to? Example: ' + region.exampleDest);
@@ -494,7 +517,7 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             }
 
             if (from.toLowerCase() === to.toLowerCase()) {
-                await sendGupshupMessage(phoneJid, 'From and to can\'t be the same (' + from + '). Where are you driving to?');
+                await sendGupshupMessage(phoneJid, 'From and to can\'t be the same. Where are you driving to?');
                 currentSess.draft.to = null;
                 return;
             }
@@ -515,22 +538,29 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             return;
         }
 
-        // Rider Flow
-        if (ai.role === 'rider') {
+        // Rider Execution Path
+        if (ai.role === 'rider' || (currentSess.draft && currentSess.draft.role === 'rider')) {
             let draft = currentSess.draft || {};
             let from = ai.from || draft.from || null;
             let to = ai.to || draft.to || null;
             let time = ai.time || draft.time || null;
             let date = ai.date || draft.date || null;
 
-            currentSess.draft.role = 'rider';
+            if (!from && lowerText && !['hi', 'hello', 'hey'].includes(lowerText)) {
+                from = text.trim();
+            }
 
             if (!from) {
+                currentSess.draft = { role: 'rider' };
                 await sendGupshupMessage(phoneJid, 'Where are you riding from? Example: ' + region.examplePlaces);
                 return;
             }
 
-            currentSess.draft.from = from;
+            currentSess.draft = { role: 'rider', from: from };
+
+            if (!to && lowerText !== from.toLowerCase() && !['hi', 'hello', 'hey'].includes(lowerText)) {
+                to = text.trim();
+            }
 
             if (!to) {
                 await sendGupshupMessage(phoneJid, 'Got it, from ' + from + ' -- where to? Example: ' + region.exampleDest);
@@ -569,7 +599,7 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             return;
         }
 
-        // Commands
+        // 6. System Commands
         if (ai.role === 'command' || ai.command) {
             if (ai.command === 'END_RIDE' || lowerText.includes('end ride') || lowerText === 'end') {
                 let rideToRate = await RideRequest.findOne({ where: { status: 'TAKEN', [Op.or]: [{ phone: userPhoneKey }, { driverPhone: userPhoneKey }, { phone: normKey }, { driverPhone: normKey }] }, order: [['updatedAt', 'DESC']] });
@@ -625,7 +655,12 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             }
         }
 
-        // Conversational AI Fallback
+        // 7. General Greetings & Fallback handling
+        if (['hi', 'hello', 'hey', 'start'].includes(lowerText)) {
+            await sendGupshupMessage(phoneJid, "Hello! Need a ride or want to offer one?\n\n- Say: *I need a ride*\n- Say: *Looking to offer ride*");
+            return;
+        }
+
         let reply = await answerGeneralQuestion(text);
         await sendGupshupMessage(phoneJid, reply);
 
