@@ -1,155 +1,280 @@
+require('dotenv').config();
+
 const { Sequelize, DataTypes, Op } = require('sequelize');
 
-if (!process.env.DATABASE_URL) {
-  throw new Error('DATABASE_URL is required');
-}
+const DATABASE_URL = process.env.DATABASE_URL || '';
+const DB_DIALECT = process.env.DB_DIALECT || (DATABASE_URL? undefined : 'sqlite');
+const DB_STORAGE = process.env.DB_STORAGE || 'induu.sqlite';
 
-const sequelize = new Sequelize(process.env.DATABASE_URL, {
-  dialect: 'postgres',
-  protocol: 'postgres',
-  logging: false,
-  dialectOptions: {
-    ssl: process.env.DATABASE_URL.includes('render.com')
-     ? { require: true, rejectUnauthorized: false }
-      : undefined,
-  },
-  pool: {
-    max: Number(process.env.DB_POOL_MAX || 10),
-    min: 0,
-    acquire: 30000,
-    idle: 10000,
-  },
-  retry: { max: 3 },
-});
+const sequelize = DATABASE_URL
+ ? new Sequelize(DATABASE_URL, {
+      dialect: DB_DIALECT,
+      logging: process.env.DB_LOGGING === 'true'? console.log : false,
+      pool: { max: 10, min: 0, acquire: 30000, idle: 10000 },
+      dialectOptions: DB_DIALECT === 'postgres'? { ssl: process.env.DB_SSL === 'true'? { require: true, rejectUnauthorized: false } : false } : {},
+    })
+  : new Sequelize({
+      dialect: 'sqlite',
+      storage: DB_STORAGE,
+      logging: process.env.DB_LOGGING === 'true'? console.log : false,
+    });
+
+const USER_DEFAULTS = {
+  rating: 5,
+  ratingCount: 0,
+  isOnline: false,
+};
 
 const User = sequelize.define('User', {
-  phone: { type: DataTypes.STRING, primaryKey: true, allowNull: false },
-  name: { type: DataTypes.STRING, allowNull: true },
-  location: { type: DataTypes.STRING, defaultValue: 'Juja' },
-  filterFrom: { type: DataTypes.STRING, allowNull: true },
-  isOnline: { type: DataTypes.BOOLEAN, defaultValue: false },
+  phone: { type: DataTypes.STRING(32), allowNull: false, unique: true, validate: { notEmpty: true, len: [7, 32] } },
+  name: { type: DataTypes.STRING(80), allowNull: true },
+  rating: { type: DataTypes.FLOAT, allowNull: false, defaultValue: USER_DEFAULTS.rating, validate: { min: 1, max: 5 } },
+  ratingCount: { type: DataTypes.INTEGER, allowNull: false, defaultValue: USER_DEFAULTS.ratingCount, validate: { min: 0 } },
+  location: { type: DataTypes.STRING(100), allowNull: true },
+  filterFrom: { type: DataTypes.STRING(100), allowNull: true },
+  filterTo: { type: DataTypes.STRING(100), allowNull: true },
+  onlineDate: { type: DataTypes.STRING(10), allowNull: true },
+  isOnline: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
   onlineUntil: { type: DataTypes.DATE, allowNull: true },
-  rating: { type: DataTypes.FLOAT, defaultValue: 5.0, allowNull: false },
-  ratingCount: { type: DataTypes.INTEGER, defaultValue: 0, allowNull: false },
-}, { indexes: [{ fields: ['isOnline', 'onlineUntil'] }, { fields: ['location'] }] });
+  lastSeenAt: { type: DataTypes.DATE, allowNull: true },
+}, {
+  indexes: [
+    { unique: true, fields: ['phone'] },
+    { fields: ['isOnline', 'onlineUntil'] },
+    { fields: ['location'] },
+  ],
+});
 
 const RideRequest = sequelize.define('RideRequest', {
-  id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
-  phone: { type: DataTypes.STRING, allowNull: false },
-  driverPhone: { type: DataTypes.STRING, allowNull: true },
-  from: { type: DataTypes.STRING, allowNull: false },
-  to: { type: DataTypes.STRING, allowNull: false },
-  date: { type: DataTypes.STRING, allowNull: false },
-  time: { type: DataTypes.STRING, allowNull: false },
-  seats: { type: DataTypes.INTEGER, defaultValue: 1, allowNull: false },
-  bags: { type: DataTypes.INTEGER, defaultValue: 0, allowNull: false },
-  girls_only: { type: DataTypes.BOOLEAN, defaultValue: false, allowNull: false },
-  pool_allowed: { type: DataTypes.BOOLEAN, defaultValue: true, allowNull: false },
-  status: { type: DataTypes.STRING, defaultValue: 'OPEN', allowNull: false },
-}, { indexes: [{ fields: ['status', 'createdAt'] }, { fields: ['phone', 'status'] }, { fields: ['driverPhone', 'status'] }, { fields: ['date', 'time', 'status'] }] });
+  phone: { type: DataTypes.STRING(32), allowNull: false },
+  driverPhone: { type: DataTypes.STRING(32), allowNull: true },
+  from: { type: DataTypes.STRING(100), allowNull: false },
+  to: { type: DataTypes.STRING(100), allowNull: false },
+  date: { type: DataTypes.STRING(10), allowNull: false },
+  time: { type: DataTypes.STRING(5), allowNull: false },
+  seats: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 1, validate: { min: 1, max: 6 } },
+  passengerCount: { type: DataTypes.INTEGER, allowNull: true },
+  status: { type: DataTypes.ENUM('OPEN', 'TAKEN', 'COMPLETED', 'CANCELLED', 'EXPIRED'), allowNull: false, defaultValue: 'OPEN' },
+  takenAt: { type: DataTypes.DATE, allowNull: true },
+  completedAt: { type: DataTypes.DATE, allowNull: true },
+  cancelledAt: { type: DataTypes.DATE, allowNull: true },
+  timezone: { type: DataTypes.STRING(64), allowNull: false, defaultValue: 'America/Chicago' },
+  expiresAt: { type: DataTypes.DATE, allowNull: true },
+  metadata: { type: DataTypes.JSON, allowNull: true },
+}, {
+  indexes: [
+    { fields: ['status', 'date', 'time'] },
+    { fields: ['phone', 'status'] },
+    { fields: ['driverPhone', 'status'] },
+    { fields: ['expiresAt'] },
+    { fields: ['from'] },
+    { fields: ['to'] },
+  ],
+});
 
 const RideOffer = sequelize.define('RideOffer', {
-  id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
-  phone: { type: DataTypes.STRING, allowNull: false },
-  from: DataTypes.STRING,
-  to: DataTypes.STRING,
-  date: DataTypes.STRING,
-  time: DataTypes.STRING,
-  seats: { type: DataTypes.INTEGER, defaultValue: 3 },
-  price: { type: DataTypes.INTEGER, defaultValue: 30 },
-  rating: { type: DataTypes.FLOAT, defaultValue: 5.0 },
-}, { indexes: [{ fields: ['date', 'time'] }, { fields: ['phone'] }] });
+  phone: { type: DataTypes.STRING(32), allowNull: false },
+  from: { type: DataTypes.STRING(100), allowNull: false },
+  to: { type: DataTypes.STRING(100), allowNull: false },
+  date: { type: DataTypes.STRING(10), allowNull: true },
+  time: { type: DataTypes.STRING(5), allowNull: true },
+  seats: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 1 },
+  status: { type: DataTypes.ENUM('ACTIVE', 'FULL', 'CANCELLED', 'EXPIRED'), allowNull: false, defaultValue: 'ACTIVE' },
+  metadata: { type: DataTypes.JSON, allowNull: true },
+}, {
+  indexes: [
+    { fields: ['phone', 'status'] },
+    { fields: ['date', 'time'] },
+    { fields: ['from', 'to'] },
+  ],
+});
 
-function normalizePhone(phone) {
-  return String(phone || '').split('@')[0].replace(/[^0-9]/g, '');
+function normalizePhone(value) {
+  return String(value || '').split('@')[0].replace(/[^0-9]/g, '');
+}
+function cleanLocation(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim().slice(0, 100);
+}
+function isDate(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value || ''))) return false;
+  const [y, m, d] = String(value).split('-').map(Number);
+  const date = new Date(Date.UTC(y, m - 1, d));
+  return date.getUTCFullYear() === y && date.getUTCMonth() === m - 1 && date.getUTCDate() === d;
+}
+function isTime(value) {
+  if (!/^\d{2}:\d{2}$/.test(String(value || ''))) return false;
+  const [h, m] = String(value).split(':').map(Number);
+  return h >= 0 && h <= 23 && m >= 0 && m <= 59;
+}
+function localDateTimeToUtc(date, time, timezone) {
+  if (!isDate(date) ||!isTime(time)) return null;
+  const [year, month, day] = date.split('-').map(Number);
+  const [hour, minute] = time.split(':').map(Number);
+  let guess = new Date(Date.UTC(year, month - 1, day, hour, minute, 0));
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone || 'America/Chicago',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+  });
+  const wanted = Date.UTC(year, month - 1, day, hour, minute, 0);
+  for (let i = 0; i < 3; i++) {
+    const parts = Object.fromEntries(formatter.formatToParts(guess).filter(x => x.type!== 'literal').map(x => [x.type, x.value]));
+    const localAsUtc = Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day), Number(parts.hour), Number(parts.minute), Number(parts.second));
+    guess = new Date(guess.getTime() + (wanted - localAsUtc));
+  }
+  return guess;
+}
+function calculateExpiry(date, time, timezone) {
+  const rideAt = localDateTimeToUtc(date, time, timezone);
+  if (!rideAt) return new Date(Date.now() + 24 * 60 * 60 * 1000);
+  return new Date(rideAt.getTime() + 2 * 60 * 60 * 1000);
+}
+function normalizeRideInput(phone, data) {
+  const normalized = {
+    phone: normalizePhone(phone),
+    from: cleanLocation(data.from),
+    to: cleanLocation(data.to),
+    date: String(data.date || '').trim(),
+    time: String(data.time || '').trim(),
+    seats: Math.max(1, Math.min(6, Number.parseInt(data.seats, 10) || 1)),
+    timezone: String(data.timezone || 'America/Chicago').slice(0, 64),
+  };
+  normalized.passengerCount = normalized.seats;
+  normalized.expiresAt = calculateExpiry(normalized.date, normalized.time, normalized.timezone);
+  return normalized;
+}
+function validateRideInput(data) {
+  const errors = [];
+  if (!data.phone || data.phone.length < 7) errors.push('Invalid phone');
+  if (!data.from || data.from.length < 2) errors.push('Invalid origin');
+  if (!data.to || data.to.length < 2) errors.push('Invalid destination');
+  if (data.from.toLowerCase() === data.to.toLowerCase()) errors.push('Origin and destination cannot be identical');
+  if (!isDate(data.date)) errors.push('Invalid date');
+  if (!isTime(data.time)) errors.push('Invalid time');
+  try { Intl.DateTimeFormat('en-US', { timeZone: data.timezone }); } catch (_) { errors.push('Invalid timezone'); }
+  if (!Number.isInteger(data.seats) || data.seats < 1 || data.seats > 6) errors.push('Invalid seats');
+  return errors;
 }
 
-User.getOrCreate = async (phone) => {
-  const normalized = normalizePhone(phone);
-  if (!normalized) throw new Error('Invalid phone number');
-  const [user, created] = await User.findOrCreate({
-    where: { phone: normalized },
-    defaults: { phone: normalized, rating: 5.0, ratingCount: 0 },
+User.prototype.setOnline = async function setOnline(location, hours = 2) {
+  const safeHours = Math.max(1 / 60, Math.min(24, Number(hours) || 2));
+  this.isOnline = true;
+  this.location = cleanLocation(location) || this.location;
+  this.onlineUntil = new Date(Date.now() + safeHours * 60 * 60 * 1000);
+  this.lastSeenAt = new Date();
+  await this.save();
+  return this;
+};
+User.prototype.setOffline = async function setOffline() {
+  this.isOnline = false;
+  this.onlineUntil = null;
+  this.lastSeenAt = new Date();
+  await this.save();
+  return this;
+};
+User.getOrCreate = async function getOrCreate(phone) {
+  const key = normalizePhone(phone);
+  if (!key) throw new Error('A valid phone number is required');
+  const [user] = await User.findOrCreate({
+    where: { phone: key },
+    defaults: { phone: key,...USER_DEFAULTS, lastSeenAt: new Date() },
   });
-  if (created) return user;
-  if (user.rating == null) user.rating = 5.0;
-  if (user.ratingCount == null) user.ratingCount = 0;
-  if (!user.location) user.location = 'Juja';
-  await user.save();
+  if (user.lastSeenAt === null) {
+    user.lastSeenAt = new Date();
+    await user.save();
+  }
   return user;
 };
 
-User.prototype.setOnline = async function (loc, hours = 2) {
-  this.location = loc || this.location || 'Juja';
-  this.isOnline = true;
-  const duration = Math.max(1, Math.min(24, Number(hours) || 2));
-  this.onlineUntil = new Date(Date.now() + duration * 60 * 60 * 1000);
-  await this.save(); return this;
-};
-User.prototype.setOffline = async function () {
-  this.isOnline = false; this.onlineUntil = null;
-  await this.save(); return this;
-};
-User.prototype.addRating = async function (stars) {
-  const value = Math.max(1, Math.min(5, Number(stars)));
-  if (!this.ratingCount || this.ratingCount < 1) {
-    this.rating = value; this.ratingCount = 1;
-  } else {
-    const total = Number(this.rating || 5) * Number(this.ratingCount);
-    this.ratingCount += 1;
-    this.rating = (total + value) / this.ratingCount;
+async function initDatabase() {
+  await sequelize.authenticate();
+  await sequelize.sync({ alter: process.env.DB_ALLOW_ALTER!== 'false' });
+  return sequelize;
+}
+async function createRideSafely(phone, data, transaction = undefined) {
+  const input = normalizeRideInput(phone, data);
+  const errors = validateRideInput(input);
+  if (errors.length) {
+    const error = new Error(`Ride validation failed: ${errors.join(', ')}`);
+    error.code = 'RIDE_VALIDATION';
+    error.details = errors;
+    throw error;
   }
-  await this.save(); return this.rating;
-};
-User.clearExpiredOnline = async () => {
-  await User.update({ isOnline: false, onlineUntil: null }, { where: { isOnline: true, onlineUntil: { [Op.lte]: new Date() } } });
-};
-
-RideRequest.createRide = async (phone, ai) => {
-  const normalized = normalizePhone(phone);
-  if (!normalized) throw new Error('Invalid rider phone');
-  if (!ai?.from ||!ai?.to ||!ai?.date ||!ai?.time) throw new Error('Ride requires from, to, date and time');
-
-  // Duplicate protection: same rider, same route, OPEN
-  const dup = await RideRequest.findOne({ where: { phone: normalized, from: ai.from, to: ai.to, date: ai.date, status: 'OPEN' } });
-  if (dup) return dup;
-
-  return RideRequest.create({
-    phone: normalized, driverPhone: null,
-    from: String(ai.from).trim(), to: String(ai.to).trim(),
-    date: String(ai.date).trim(), time: String(ai.time).trim(),
-    seats: Math.max(1, Math.min(6, Number(ai.seats) || 1)),
-    bags: Math.max(0, Math.min(10, Number(ai.bags) || 0)),
-    girls_only: Boolean(ai.girls_only), pool_allowed: ai.pool_allowed!== false,
-    status: 'OPEN',
+  const existing = await RideRequest.findOne({
+    where: { phone: input.phone, status: 'OPEN', from: input.from, to: input.to, date: input.date, time: input.time },
+    transaction,
   });
-};
-RideRequest.createCustom = RideRequest.createRide;
+  if (existing) return existing;
+  return RideRequest.create(input, { transaction });
+}
+async function claimRideSafely(rideId, driverPhone) {
+  const driver = normalizePhone(driverPhone);
+  if (!driver) return null;
+  const [count] = await RideRequest.update(
+    { status: 'TAKEN', driverPhone: driver, takenAt: new Date() },
+    { where: { id: rideId, status: 'OPEN', phone: { [Op.ne]: driver } } },
+  );
+  if (count!== 1) return null;
+  return RideRequest.findByPk(rideId);
+}
+async function completeRideSafely(rideId, actorPhone) {
+  const actor = normalizePhone(actorPhone);
+  if (!actor) return null;
+  const [count] = await RideRequest.update(
+    { status: 'COMPLETED', completedAt: new Date() },
+    { where: { id: rideId, status: 'TAKEN', [Op.or]: [{ phone: actor }, { driverPhone: actor }] } },
+  );
+  return count === 1? RideRequest.findByPk(rideId) : null;
+}
+async function cancelRideSafely(rideId, actorPhone) {
+  const actor = normalizePhone(actorPhone);
+  if (!actor) return null;
+  const [count] = await RideRequest.update(
+    { status: 'CANCELLED', cancelledAt: new Date() },
+    { where: { id: rideId, status: 'OPEN', phone: actor } },
+  );
+  return count === 1? RideRequest.findByPk(rideId) : null;
+}
+async function findUserActiveRide(phone) {
+  const key = normalizePhone(phone);
+  if (!key) return null;
+  return RideRequest.findOne({ where: { status: 'TAKEN', [Op.or]: [{ phone: key }, { driverPhone: key }] }, order: [['updatedAt', 'DESC']] });
+}
+async function findUserOpenRequests(phone) {
+  const key = normalizePhone(phone);
+  if (!key) return [];
+  return RideRequest.findAll({ where: { phone: key, status: 'OPEN' }, order: [['createdAt', 'DESC']] });
+}
+async function findMatchingRides(criteria = {}) {
+  const where = { status: 'OPEN' };
+  if (criteria.date) where.date = criteria.date;
+  if (criteria.from) where.from = { [Op.like]: `%${cleanLocation(criteria.from)}%` };
+  if (criteria.to) where.to = { [Op.like]: `%${cleanLocation(criteria.to)}%` };
+  return RideRequest.findAll({ where, order: [['createdAt', 'DESC']] });
+}
+async function cleanupDatabase() {
+  const now = new Date();
+  await RideRequest.update({ status: 'EXPIRED' }, { where: { status: 'OPEN', [Op.or]: [{ expiresAt: { [Op.lte]: now } }, { date: { [Op.lt]: now.toISOString().slice(0, 10) } }] } });
+  await RideOffer.update({ status: 'EXPIRED' }, { where: { status: 'ACTIVE', date: { [Op.lt]: now.toISOString().slice(0, 10) } } });
+  await User.update({ isOnline: false, onlineUntil: null }, { where: { isOnline: true, onlineUntil: { [Op.lte]: now } } });
+  return { expired: 0 };
+}
 
-RideRequest.clearExpired = async () => {
-  const rides = await RideRequest.findAll({ where: { status: 'OPEN' }, attributes: ['id', 'date', 'time'] });
-  const expiredIds = []; const now = new Date();
-  for (const ride of rides) {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(ride.date || ''))) continue;
-    if (!/^\d{1,2}:\d{2}$/.test(String(ride.time || ''))) continue;
-    const [y, m, d] = ride.date.split('-').map(Number);
-    const [h, min] = ride.time.split(':').map(Number);
-    const scheduled = new Date(Date.UTC(y, m - 1, d, h, min, 0));
-    if (scheduled.getTime() < now.getTime() - 2 * 60 * 60 * 1000) expiredIds.push(ride.id);
-  }
-  if (expiredIds.length) await RideRequest.destroy({ where: { id: { [Op.in]: expiredIds }, status: 'OPEN' } });
-  return expiredIds.length;
+module.exports = {
+  sequelize,
+  User,
+  RideRequest,
+  RideOffer,
+  Op,
+  initDatabase,
+  cleanupDatabase,
+  createRideSafely,
+  claimRideSafely,
+  completeRideSafely,
+  cancelRideSafely,
+  findUserActiveRide,
+  findUserOpenRequests,
+  findMatchingRides,
+  normalizePhone,
+  validateRideInput,
 };
-
-RideOffer.createOffer = async (phone, ai) => {
-  const normalized = normalizePhone(phone);
-  return RideOffer.create({
-    phone: normalized, from: ai.from, to: ai.to, date: ai.date, time: ai.time,
-    seats: Math.max(1, Math.min(6, Number(ai.seats) || 3)),
-    price: Number.isFinite(Number(ai.price))? Number(ai.price) : 30,
-  });
-};
-RideOffer.createCustom = RideOffer.createOffer;
-RideOffer.clearExpired = async () => 0;
-
-module.exports = { sequelize, User, RideRequest, RideOffer, Op };
