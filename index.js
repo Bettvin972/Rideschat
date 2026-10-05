@@ -214,11 +214,17 @@ function getDirectChatLink(jid) {
     let num = normalizePhone(jid);
     return 'https://wa.me/' + num;
 }
+// FIXED: parseRating no longer catches "5 miles"
 function parseRating(txt) {
     const t = txt.toLowerCase().trim();
+    if (t.length > 20) return null;
     if (/^[1-5]$/.test(t)) return parseInt(t, 10);
-    let m = t.match(/\b([1-5])\b/);
-    if (m) return parseInt(m[1], 10);
+    if (/^[1-5]\s*stars?$/i.test(t)) return parseInt(t[0], 10);
+    if (t.includes('skip') || t.includes('need a ride') || t.includes('from ') || t.includes('miles')) return null;
+    if (t.length <= 10) {
+        let m = t.match(/\b([1-5])\b/);
+        if (m) return parseInt(m[1], 10);
+    }
     return null;
 }
 async function addRatingToUser(phone, newRating) {
@@ -412,25 +418,43 @@ async function handleRideLogic(phoneJid, text, realPhone) {
         const region = detectUserRegion(userPhoneKey);
         const rawText = text.trim();
 
+        // FIXED RATING LOGIC - don't intercept new ride requests
         let ratingSess = ratingSessions[userPhoneKey] || ratingSessions[normKey] || ratingSessions[phoneJid];
         if (ratingSess) {
-            let rate = parseRating(lowerText);
-            if (rate) {
-                let otherTarget = ratingSess.other;
-                let rideId = ratingSess.rideId;
-                let newAvg = await addRatingToUser(otherTarget, rate);
+            if (lowerText.includes('need a ride') || lowerText.includes('need ride') || (lowerText.includes('from ') && lowerText.includes(' to ')) || lowerText.includes('miles') || rawText.length > 30) {
+                // User wants a new ride, clear old rating session and continue
                 delete ratingSessions[userPhoneKey];
                 delete ratingSessions[normKey];
                 delete ratingSessions[phoneJid];
-                delete ratingSessions[normalizePhone(otherTarget)];
-                await sendGupshupMessage(phoneJid, 'Rating saved! You rated ' + rate + ' ★ for trip ' + rideId + '. New avg for them: ' + newAvg.toFixed(1) + ' ★\n\nNeed another? Say: Need a ride');
-                return;
-            } else if (lowerText.includes('skip') || lowerText === 'no') {
-                delete ratingSessions[userPhoneKey];
-                delete ratingSessions[normKey];
-                delete ratingSessions[phoneJid];
-                await sendGupshupMessage(phoneJid, "Skipped rating. Need another? Say: Need a ride");
-                return;
+                delete ratingSessions[normalizePhone(ratingSess.other)];
+            } else {
+                let rate = parseRating(lowerText);
+                if (rate) {
+                    let otherTarget = ratingSess.other;
+                    let rideId = ratingSess.rideId;
+                    let newAvg = await addRatingToUser(otherTarget, rate);
+                    delete ratingSessions[userPhoneKey];
+                    delete ratingSessions[normKey];
+                    delete ratingSessions[phoneJid];
+                    delete ratingSessions[normalizePhone(otherTarget)];
+                    await sendGupshupMessage(phoneJid, 'Rating saved! You rated ' + rate + ' ★ for trip ' + rideId + '. New avg for them: ' + newAvg.toFixed(1) + ' ★\n\nNeed another? Say: Need a ride');
+                    return;
+                } else if (lowerText.includes('skip') || lowerText === 'no') {
+                    delete ratingSessions[userPhoneKey];
+                    delete ratingSessions[normKey];
+                    delete ratingSessions[phoneJid];
+                    await sendGupshupMessage(phoneJid, "Skipped rating. Need another? Say: Need a ride");
+                    return;
+                }
+                // if not a rating and not a ride request, keep waiting but don't block chat
+                if (lowerText.length > 2 &&!['1','2','3','4','5','skip','no'].includes(lowerText)) {
+                    // allow general chat to pass through after clearing rating? No, keep session but allow other logic below
+                    // For "thank you" etc, just acknowledge and keep rating session
+                    if (['thanks','thank you','thankyou','thx'].includes(lowerText)) {
+                        await sendGupshupMessage(phoneJid, "You're welcome! Please rate your last trip 1-5 or say skip");
+                        return;
+                    }
+                }
             }
         }
 
