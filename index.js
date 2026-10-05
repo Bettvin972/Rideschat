@@ -102,7 +102,7 @@ function getCountdownText(rideTimeStr, rideDateStr, timezone) {
     const m = parseInt(parts[1] || '0', 10);
     if (Number.isNaN(h) || h < 0 || h > 23 || m < 0 || m > 59) return 'NOW';
     const dateStr = /^\d{4}-\d{2}-\d{2}$/.test(String(rideDateStr || ''))
-      ? rideDateStr : getLocalDateString(new Date(), timezone);
+     ? rideDateStr : getLocalDateString(new Date(), timezone);
     const [yy, mm, dd] = dateStr.split('-').map(Number);
     const target = new Date(Date.UTC(yy, mm - 1, dd, h, m, 0));
     const diffMins = Math.round((target.getTime() - now.getTime()) / 60000);
@@ -299,7 +299,7 @@ async function sendGupshupMessage(toJid, txt) {
     } catch(e) { console.error(e.message); }
 }
 
-// --- FINAL: NO REPETITION, NO COUNTDOWN, 15 PER PAGE ---
+// --- FINAL PERFECT: 3 LINES PER RIDE ---
 async function sendRidesList(toJid, rides, title, page, timezone) {
     if (title === undefined) title = "RIDES:";
     if (page === undefined) page = 0;
@@ -349,13 +349,12 @@ async function sendRidesList(toJid, rides, title, page, timezone) {
         let niceTo = to.charAt(0).toUpperCase() + to.slice(1);
         let timeDisp = toDisplayTime(r.time);
         let dateDisp = toDisplayDate(r.date, timezone);
-        let seats = r.seats || r.passengerCount || null;
-        let seatsStr = seats? ` • ${seats} ${seats==1?'person':'people'}` : '';
+        let seats = r.seats || r.passengerCount || 1;
+        let seatsStr = ` • ${seats} ${seats==1?'person':'people'}`;
 
-        // SHORT - no Pick up/Drop repetition, no countdown
-        out += `~ ${username} • ${rate}★${count?` (${count})`:''}\n`;
-        out += `${niceFrom} → ${niceTo}\n`;
-        out += `${dateDisp} at ${timeDisp}${seatsStr}\n`;
+        // 3 LINES ONLY - Rider / Ride Details / Reply
+        out += `~ ${username} • ${rate}★ (${count})\n`;
+        out += `${niceFrom} → ${niceTo} • ${dateDisp} ${timeDisp}${seatsStr}\n`;
         out += `Reply ${r.id}\n\n`;
     }
 
