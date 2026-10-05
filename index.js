@@ -328,15 +328,18 @@ async function checkAndForwardChat(phoneJid, text, realPhone) {
 }
 async function answerGeneralQuestion(q, region, loc) {
     const lower = q.toLowerCase().trim();
-    const greeting = getTimeGreeting(region.timezone);
     if (!lower || lower.length <= 2) return null;
     if (/^\d+$/.test(lower)) return null;
     if (['thanks','thank you','thankyou','thx'].includes(lower)) return "You're welcome!";
     if (lower.startsWith('okay') || ['ok','okay','cool','nice','great','alright'].includes(lower)) return "Got it!";
-    if (['hi','hey','hello','hii','heyy','yo'].includes(lower)) return greeting + "! I'm Bett - I help students with rides.";
-    if (lower.includes('who are you') || lower.includes('what are you')) return "I'm Bett! I help students connect with affordable rides near campus.";
+    if (['hi','hey','hello','hii','heyy','yo'].includes(lower)) {
+        return "Hello! I'm Induu — matching riders and drivers in seconds. Just text me your trip.";
+    }
+    if (lower.includes('who are you') || lower.includes('what are you')) {
+        return "Hello! I'm Induu — matching riders and drivers in seconds. Just text me your trip.";
+    }
     try {
-        let sys = 'You are Bett, a friendly ride assistant. Rules: Answer in clear English, 2-3 sentences max, relevant to location ' + (loc || region.defaultCity) + ' in ' + region.country + '. No emojis.';
+        let sys = 'You are Induu, a friendly ride-sharing connector. Rules: Answer in clear English, 2-3 sentences max, relevant to location ' + (loc || region.defaultCity) + ' in ' + region.country + '.';
         const res = await axios.post("https://api.groq.com/openai/v1/chat/completions", {
             model: "openai/gpt-oss-20b",
             messages: [{role:"system",content:sys},{role:"user",content:q}],
@@ -345,7 +348,7 @@ async function answerGeneralQuestion(q, region, loc) {
         return res.data.choices[0].message.content.trim();
     } catch(e) { return null; }
 }
-var SYSTEM_PROMPT = `You are Bett, an AI student ride-sharing assistant operating in {COUNTRY}.
+var SYSTEM_PROMPT = `You are Induu, an AI student ride-sharing connector operating in {COUNTRY}.
 Current Context:
 - Local Time: {TODAY_INFO} [{TODAY_DATE}]
 - Active Draft Session: {CONTEXT_DRAFT}
@@ -413,7 +416,7 @@ async function handleRideLogic(phoneJid, text, realPhone) {
                 delete ratingSessions[normKey];
                 delete ratingSessions[phoneJid];
                 delete ratingSessions[normalizePhone(otherTarget)];
-                await sendGupshupMessage(phoneJid, 'Rating saved! You rated ' + rate + ' ⭐ for trip ' + rideId + '. New avg for them: ' + newAvg.toFixed(1) + ' ⭐\n\nNeed another? Say: Need a ride');
+                await sendGupshupMessage(phoneJid, 'Rating saved! You rated ' + rate + ' ★ for trip ' + rideId + '. New avg for them: ' + newAvg.toFixed(1) + ' ★\n\nNeed another? Say: Need a ride');
                 return;
             } else if (lowerText.includes('skip') || lowerText === 'no') {
                 delete ratingSessions[userPhoneKey];
@@ -441,8 +444,8 @@ async function handleRideLogic(phoneJid, text, realPhone) {
                     activeChats[userPhoneKey] = { with: ride.phone, rideId: ride.id };
                     activeChats[normKey] = { with: ride.phone, rideId: ride.id };
                     let rider = await User.getOrCreate(ride.phone);
-                    await sendGupshupMessage(phoneJid, 'MATCHED ' + ride.id + ' ' + ride.from + ' -> ' + ride.to + ' ' + toDisplayTime(ride.time) + '\nRider: ' + getDirectChatLink(ride.phone) + ' | Rating: ' + (rider.rating||5).toFixed(1) + ' ⭐\nEND RIDE when done');
-                    await sendGupshupMessage(ride.phone, 'DRIVER FOUND ' + ride.id + ' ' + ride.from + ' -> ' + ride.to + '\nDriver: ' + getDirectChatLink(userPhoneKey) + ' | Rating: ' + ((await User.getOrCreate(userPhoneKey)).rating||5).toFixed(1) + ' ⭐');
+                    await sendGupshupMessage(phoneJid, 'MATCHED ' + ride.id + ' ' + ride.from + ' -> ' + ride.to + ' ' + toDisplayTime(ride.time) + '\nRider: ' + getDirectChatLink(ride.phone) + ' | Rating: ' + (rider.rating||5).toFixed(1) + ' ★\nEND RIDE when done');
+                    await sendGupshupMessage(ride.phone, 'DRIVER FOUND ' + ride.id + ' ' + ride.from + ' -> ' + ride.to + '\nDriver: ' + getDirectChatLink(userPhoneKey) + ' | Rating: ' + ((await User.getOrCreate(userPhoneKey)).rating||5).toFixed(1) + ' ★');
                     return;
                 } else { await sendGupshupMessage(phoneJid, 'Ride ' + rideId + ' already taken'); return; }
             }
@@ -466,6 +469,12 @@ async function handleRideLogic(phoneJid, text, realPhone) {
             let draft = currentSess.draft || {};
             let from = ai.from || draft.from || null;
             let to = ai.to || draft.to || null;
+            if (from && to && from.toLowerCase() === to.toLowerCase() && rawText.toLowerCase() === from.toLowerCase()) {
+                to = null;
+            }
+            if (to && (lowerText.includes('tell me') || lowerText.includes('nearby') || lowerText.includes('what') || lowerText.length > 25)) {
+                to = null;
+            }
             if (!from && rawText.length >= 3 && rawText.length <= 30) {
                 if (!isCommandPhrase(rawText) &&!['online','offline','clear','next','hi','hey','hello','ok','now'].includes(lowerText)) from = rawText;
             }
@@ -480,7 +489,7 @@ async function handleRideLogic(phoneJid, text, realPhone) {
                     await sendGupshupMessage(phoneJid, 'You are already at ' + from + '. Where to? Example: ' + region.exampleDest);
                     return;
                 }
-                if (draft.from && rawText.length >=3 && rawText.toLowerCase()!== draft.from.toLowerCase()) {
+                if (draft.from && rawText.length >=3 && rawText.length <= 30 && rawText.toLowerCase()!== draft.from.toLowerCase() &&!isCommandPhrase(rawText) &&!lowerText.includes('tell me') &&!lowerText.includes('nearby')) {
                     if (!['now','asap'].includes(lowerText) &&!isCommandPhrase(rawText)) to = rawText;
                 }
                 if (!to) {
@@ -605,8 +614,8 @@ async function handleRideLogic(phoneJid, text, realPhone) {
                     ratingSessions[normKey] = { rideId: rideToRate.id, other: otherPhone };
                     ratingSessions[otherPhone] = { rideId: rideToRate.id, other: userPhoneKey };
                     ratingSessions[normOther] = { rideId: rideToRate.id, other: userPhoneKey };
-                    await sendGupshupMessage(phoneJid, 'Trip ' + rideToRate.id + ' ended. Thanks for riding with Bett!\n\nPlease rate: Reply 1-5 stars (5 = Excellent)');
-                    await sendGupshupMessage(otherPhone, 'Trip ' + rideToRate.id + ' ended. Thanks for riding with Bett!\n\nPlease rate: Reply 1-5 stars (5 = Excellent)');
+                    await sendGupshupMessage(phoneJid, 'Trip ' + rideToRate.id + ' ended. Thanks for using Induu!\n\nPlease rate: Reply 1-5 stars (5 = Excellent)');
+                    await sendGupshupMessage(otherPhone, 'Trip ' + rideToRate.id + ' ended. Thanks for using Induu!\n\nPlease rate: Reply 1-5 stars (5 = Excellent)');
                 } else { await sendGupshupMessage(phoneJid, "Trip ended. Chat closed.\nNeed another? Say: Need a ride"); }
                 return;
             }
@@ -639,7 +648,9 @@ async function handleRideLogic(phoneJid, text, realPhone) {
         }
 
         let reply = await answerGeneralQuestion(text, region, (currentSess.draft && currentSess.draft.from));
-        if (!reply) reply = getTimeGreeting(region.timezone) + "! I'm Bett -- I help students with rides.";
+        if (!reply) {
+            reply = "Hello! I'm Induu — matching riders and drivers in seconds. Just text me your trip.";
+        }
         await sendGupshupMessage(phoneJid, reply);
     } catch (err) { console.error('Error in handleRideLogic:', err.stack || err.message); }
 }
@@ -648,7 +659,7 @@ async function startWhatsApp() {
     if (!fs.existsSync(AUTH_PATH)) fs.mkdirSync(AUTH_PATH, { recursive: true });
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_PATH);
     const { version } = await fetchLatestBaileysVersion();
-    sock = makeWASocket({ version, auth: state, logger: pino({ level: 'silent' }), browser: ["Bett Universal", "Chrome", "1.0"], shouldSyncHistoryMessage: () => false, syncFullHistory: false, markOnlineOnConnect: false, getMessage: async () => undefined });
+    sock = makeWASocket({ version, auth: state, logger: pino({ level: 'silent' }), browser: ["Induu Universal", "Chrome", "1.0"], shouldSyncHistoryMessage: () => false, syncFullHistory: false, markOnlineOnConnect: false, getMessage: async () => undefined });
     sock.ev.on('creds.update', saveCreds);
     sock.ev.on('connection.update', async (u) => {
         const { connection, lastDisconnect, qr } = u;
@@ -688,7 +699,7 @@ startWhatsApp();
 setInterval(async () => { try { if (RideRequest.clearExpired) await RideRequest.clearExpired(); } catch(e){} }, 15 * 60 * 1000);
 app.get('/qr', (req, res) => { if (!qrLast) return res.send("<h1>Connected!</h1>"); var qrImage = "https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=" + encodeURIComponent(qrLast); res.send('<h1>Scan</h1><img src=\'' + qrImage + '\'/>'); });
 app.get('/ping', (req, res) => { res.send("Alive"); });
-app.get('/', (req, res) => { res.send("Bett LIVE - Dynamic Rides - /qr"); });
+app.get('/', (req, res) => { res.send("Induu LIVE - Dynamic Rides - /qr"); });
 app.get('/clearall', async (req, res) => {
     await RideRequest.destroy({ where: {} });
     await RideOffer.destroy({ where: {} });
@@ -703,4 +714,4 @@ app.get('/ratings', async (req, res) => {
     res.json(users.map(u => ({ phone: u.phone, rating: u.rating, count: u.ratingCount })));
 });
 var PORT = process.env.PORT || 10000;
-app.listen(PORT, () => { console.log("Bett Running on " + PORT); });
+app.listen(PORT, () => { console.log("Induu Running on " + PORT); });
