@@ -1,4 +1,3 @@
-
 require('dotenv').config();
 
 const express = require('express');
@@ -69,7 +68,7 @@ const processedMessages = new Map();
 const notificationLocks = new Map();
 
 function log(level, message, meta = undefined) {
-  const suffix = meta === undefined? '' : ` ${safeJson(meta)}`;
+  const suffix = meta === undefined ? '' : ` ${safeJson(meta)}`;
   const line = `[${new Date().toISOString()}] ${message}${suffix}`;
   if (level === 'error') console.error(line);
   else if (level === 'warn') console.warn(line);
@@ -102,12 +101,12 @@ function getJid(phoneOrJid) {
   const raw = String(phoneOrJid);
   if (raw.includes('@')) return raw;
   const digits = normalizePhone(raw);
-  return digits? `${digits}@s.whatsapp.net` : '';
+  return digits ? `${digits}@s.whatsapp.net` : '';
 }
 
 function getDirectChatLink(jid) {
   const number = normalizePhone(jid);
-  return number? `https://wa.me/${number}` : '';
+  return number ? `https://wa.me/${number}` : '';
 }
 
 function clampInteger(value, min, max, fallback = null) {
@@ -117,7 +116,7 @@ function clampInteger(value, min, max, fallback = null) {
 }
 
 function cleanText(value, maxLength = MAX_MESSAGE_LENGTH) {
-  return String(value?? '').replace(/\u0000/g, '').trim().slice(0, maxLength);
+  return String(value ?? '').replace(/\u0000/g, '').trim().slice(0, maxLength);
 }
 
 function getSession(phone) {
@@ -148,9 +147,9 @@ function queueUserMessage(phone, task) {
   const key = normalizePhone(phone) || String(phone || 'unknown');
   const previous = userQueues.get(key) || Promise.resolve();
   const next = previous
-   .catch(() => {})
-   .then(task)
-   .catch(err => logError(`User queue error [${key}]`, err));
+    .catch(() => {})
+    .then(task)
+    .catch(err => logError(`User queue error [${key}]`, err));
   userQueues.set(key, next);
   next.finally(() => {
     if (userQueues.get(key) === next) userQueues.delete(key);
@@ -182,7 +181,7 @@ function detectUserRegion(jid) {
       currency: 'KES',
     };
   }
-  if (digits.startsWith('1') || (digits.length === 10 &&!digits.startsWith('0'))) {
+  if (digits.startsWith('1') || (digits.length === 10 && !digits.startsWith('0'))) {
     return {
       country: 'US',
       timezone: 'America/Chicago',
@@ -216,7 +215,7 @@ function getLocalParts(date = new Date(), timezone = 'America/Chicago') {
     second: '2-digit',
     hourCycle: 'h23',
   }).formatToParts(date);
-  return Object.fromEntries(parts.filter(p => p.type!== 'literal').map(p => [p.type, p.value]));
+  return Object.fromEntries(parts.filter(p => p.type !== 'literal').map(p => [p.type, p.value]));
 }
 
 function getLocalDateString(date = new Date(), timezone = 'America/Chicago') {
@@ -252,7 +251,7 @@ function getNextWeekday(targetDay, timezone) {
   const target = days.indexOf(String(targetDay || '').toLowerCase());
   if (target < 0) return null;
   const currentName = new Intl.DateTimeFormat('en-US', { timeZone: timezone, weekday: 'long' })
-   .format(new Date()).toLowerCase();
+    .format(new Date()).toLowerCase();
   const current = days.indexOf(currentName);
   let diff = target - current;
   if (diff <= 0) diff += 7;
@@ -267,7 +266,7 @@ function parseExplicitDate(value) {
   const month = Number(match[2]);
   const day = Number(match[3]);
   const d = new Date(Date.UTC(year, month - 1, day));
-  if (d.getUTCFullYear()!== year || d.getUTCMonth()!== month - 1 || d.getUTCDate()!== day) return null;
+  if (d.getUTCFullYear() !== year || d.getUTCMonth() !== month - 1 || d.getUTCDate() !== day) return null;
   return s;
 }
 
@@ -334,7 +333,7 @@ function toDisplayTime(time) {
   const hour = Number.parseInt(parts[0], 10);
   const minute = Number.parseInt(parts[1] || '0', 10);
   if (!Number.isFinite(hour)) return String(time);
-  return `${hour % 12 || 12}:${String(minute).padStart(2, '0')} ${hour >= 12? 'PM' : 'AM'}`;
+  return `${hour % 12 || 12}:${String(minute).padStart(2, '0')} ${hour >= 12 ? 'PM' : 'AM'}`;
 }
 
 function toDisplayDate(date, timezone) {
@@ -350,14 +349,14 @@ function toDisplayDate(date, timezone) {
 }
 
 function parseLocalDateTime(dateString, timeString, timezone) {
-  if (!dateString ||!timeString || timeString === 'now') return null;
+  if (!dateString || !timeString || timeString === 'now') return null;
   const match = String(timeString).match(/^(\d{2}):(\d{2})$/);
   if (!match) return null;
   const hour = Number(match[1]);
   const minute = Number(match[2]);
   if (hour > 23 || minute > 59) return null;
   const parts = String(dateString).split('-').map(Number);
-  if (parts.length!== 3 || parts.some(n =>!Number.isFinite(n))) return null;
+  if (parts.length !== 3 || parts.some(n => !Number.isFinite(n))) return null;
   const [year, month, day] = parts;
   let guess = new Date(Date.UTC(year, month - 1, day, hour, minute, 0));
   const wanted = Date.UTC(year, month - 1, day, hour, minute, 0);
@@ -379,24 +378,24 @@ function getCountdownText(rideTime, rideDate, timezone) {
   if (diffMins < 60) return `in ${diffMins}m`;
   const hours = Math.floor(diffMins / 60);
   const minutes = diffMins % 60;
-  return `in ${hours}h${minutes? `${minutes}m` : ''}`;
+  return `in ${hours}h${minutes ? `${minutes}m` : ''}`;
 }
 
 function sortAndTagRides(rides, timezone) {
   const now = Date.now();
   return rides.map(ride => {
-    const item = ride.dataValues? {...ride.dataValues } : {...ride };
-    const target = item.time && item.date? parseLocalDateTime(item.date, item.time, timezone) : null;
-    const targetMs = target? target.getTime() : now + 86400000;
+    const item = ride.dataValues ? { ...ride.dataValues } : { ...ride };
+    const target = item.time && item.date ? parseLocalDateTime(item.date, item.time, timezone) : null;
+    const targetMs = target ? target.getTime() : now + 86400000;
     const diffMins = Math.round((targetMs - now) / 60000);
     return {
-     ...item,
+      ...item,
       diffMins,
       isUrgent: diffMins >= -30 && diffMins <= 120,
       countdownStr: getCountdownText(item.time, item.date, timezone),
     };
   }).sort((a, b) => {
-    if (a.isUrgent &&!b.isUrgent) return -1;
+    if (a.isUrgent && !b.isUrgent) return -1;
     if (!a.isUrgent && b.isUrgent) return 1;
     return a.diffMins - b.diffMins;
   });
@@ -404,17 +403,16 @@ function sortAndTagRides(rides, timezone) {
 
 function normalizeLocation(value) {
   return String(value || '')
-   .toLowerCase()
-   .replace(/[^\p{L}\p{N}\s]/gu, ' ')
-   .replace(/\s+/g, ' ')
-   .trim();
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function locationTokens(value) {
   return normalizeLocation(value).split(/\s+/).filter(Boolean);
 }
 
-// FIXED - BLOCKS FILTER AND OFFER
 function isValidLocation(location) {
   if (!location) return false;
   const value = normalizeLocation(location);
@@ -427,8 +425,9 @@ function isValidLocation(location) {
     'how are you', 'tomorrow', 'today', 'tonight', 'give ride', 'show requests', 'clear filters',
     'filter', 'filter juja', 'i want to offer ride', 'i want to give ride', 'offer ride', 'give ride', 'ride available', 'my rides', 'cancel ride', 'help', 'menu',
   ];
-  return!invalid.some(x => value === x || value.includes(x) || value.startsWith(x));
-    }
+  return !invalid.some(x => value === x || value.includes(x) || value.startsWith(x));
+}
+
 function locationsEqual(a, b) {
   const x = normalizeLocation(a);
   const y = normalizeLocation(b);
@@ -438,12 +437,12 @@ function locationsEqual(a, b) {
 function areLocationsNearby(a, b) {
   const x = normalizeLocation(a);
   const y = normalizeLocation(b);
-  if (!x ||!y) return false;
+  if (!x || !y) return false;
   if (x === y || x.includes(y) || y.includes(x)) return true;
   const aTokens = locationTokens(x);
   const bTokens = new Set(locationTokens(y));
   const stopWords = new Set(['road', 'street', 'st', 'rd', 'avenue', 'ave', 'campus', 'area', 'town', 'city', 'the', 'near']);
-  const meaningful = aTokens.filter(token => token.length >= 4 &&!stopWords.has(token));
+  const meaningful = aTokens.filter(token => token.length >= 4 && !stopWords.has(token));
   return meaningful.some(token => bTokens.has(token));
 }
 
@@ -457,9 +456,9 @@ function isPollutedRide(ride) {
   const from = String(ride?.from || '').trim();
   const to = String(ride?.to || '').trim();
   const date = String(ride?.date || '').trim();
-  if (!isValidLocation(from) ||!isValidLocation(to)) return true;
+  if (!isValidLocation(from) || !isValidLocation(to)) return true;
   if (from.length > MAX_LOCATION_LENGTH || to.length > MAX_LOCATION_LENGTH) return true;
-  if (date &&!parseExplicitDate(date)) return true;
+  if (date && !parseExplicitDate(date)) return true;
   return false;
 }
 
@@ -482,26 +481,28 @@ function parseRating(text) {
   if (stars) return Number(stars[1]);
   if (value.includes('skip') || value.includes('need a ride')) return null;
   const number = value.match(/\b([1-5])\b/);
-  return number? Number(number[1]) : null;
+  return number ? Number(number[1]) : null;
 }
 
 function parseNameCommand(text) {
   const value = cleanText(text, MAX_NAME_LENGTH).trim();
   const match = value.match(/^(?:my name is|call me|name is)\s+(.+)$/i);
-  return match? cleanText(match[1], MAX_NAME_LENGTH) : null;
+  return match ? cleanText(match[1], MAX_NAME_LENGTH) : null;
 }
 
 function getActiveChat(phone) {
   return activeChats.get(normalizePhone(phone));
 }
+
 function setActiveChat(phone, other, rideId) {
   const key = normalizePhone(phone);
   const otherKey = normalizePhone(other);
-  if (!key ||!otherKey) return;
+  if (!key || !otherKey) return;
   const record = { with: otherKey, rideId: Number(rideId), startedAt: Date.now() };
   activeChats.set(key, record);
   activeChats.set(otherKey, { with: key, rideId: Number(rideId), startedAt: record.startedAt });
 }
+
 function killChatFor(phone) {
   const key = normalizePhone(phone);
   if (!key) return;
@@ -511,7 +512,7 @@ function killChatFor(phone) {
 }
 
 async function sendWhatsAppMessage(toJid, text) {
-  if (!sock ||!toJid) return false;
+  if (!sock || !toJid) return false;
   const jid = getJid(toJid);
   if (!jid) return false;
   const body = cleanText(text);
@@ -528,12 +529,12 @@ async function sendWhatsAppMessage(toJid, text) {
 async function addRatingToUser(phone, newRating) {
   const key = normalizePhone(phone);
   const rating = Number(newRating);
-  if (!key ||![1, 2, 3, 4, 5].includes(rating)) return 5;
+  if (!key || ![1, 2, 3, 4, 5].includes(rating)) return 5;
   try {
     const user = await User.getOrCreate(key);
     const count = Math.max(0, Number(user.ratingCount || 0));
-    const current = Number.isFinite(Number(user.rating))? Number(user.rating) : 5;
-    user.rating = count === 0? rating : ((current * count) + rating) / (count + 1);
+    const current = Number.isFinite(Number(user.rating)) ? Number(user.rating) : 5;
+    user.rating = count === 0 ? rating : ((current * count) + rating) / (count + 1);
     user.ratingCount = count + 1;
     await user.save();
     return Number(user.rating || 5);
@@ -547,7 +548,7 @@ async function sendRidesList(toJid, rides, title = 'RIDES:', page = 0, timezone 
   const cleanRides = [];
   const seenIds = new Set();
   for (const ride of rides || []) {
-    const item = ride.dataValues? {...ride.dataValues } : {...ride };
+    const item = ride.dataValues ? { ...ride.dataValues } : { ...ride };
     if (isPollutedRide(item)) continue;
     if (seenIds.has(item.id)) continue;
     seenIds.add(item.id);
@@ -559,7 +560,7 @@ async function sendRidesList(toJid, rides, title = 'RIDES:', page = 0, timezone 
   }
   const sorted = sortAndTagRides(cleanRides, timezone);
   const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
-  let safePage = Number.isFinite(Number(page))? Number(page) : 0;
+  let safePage = Number.isFinite(Number(page)) ? Number(page) : 0;
   if (safePage < 0) safePage = 0;
   if (safePage >= totalPages) safePage = 0;
   const start = safePage * PAGE_SIZE;
@@ -582,11 +583,11 @@ async function sendRidesList(toJid, rides, title = 'RIDES:', page = 0, timezone 
     output += `~ ${username} • ${rating.toFixed(1)}★ (${ratingCount})\n`;
     output += `${from} → ${to}\n`;
     output += `${toDisplayDate(ride.date, timezone)} • ${toDisplayTime(ride.time)} • ${ride.countdownStr}\n`;
-    output += `${seats} ${seats === 1? 'seat' : 'seats'} • ID ${ride.id}\n\n`;
+    output += `${seats} ${seats === 1 ? 'seat' : 'seats'} • ID ${ride.id}\n\n`;
   }
   output += totalPages > 1 && safePage < totalPages - 1
-  ? `NEXT for more | Take ${chunk[0].id}`
-   : `Take ${chunk[0].id} or say ONLINE to refresh`;
+    ? `NEXT for more | Take ${chunk[0].id}`
+    : `Take ${chunk[0].id} or say ONLINE to refresh`;
   await sendWhatsAppMessage(toJid, output.trim());
   const session = getSession(toJid);
   session.ridesList = sorted;
@@ -651,30 +652,30 @@ Return exactly:
 }`;
 
 function validateAIResult(data) {
-  if (!data || typeof data!== 'object') return { role: 'chat' };
+  if (!data || typeof data !== 'object') return { role: 'chat' };
   const allowedRoles = new Set(['rider', 'driver', 'command', 'chat']);
   const allowedCommands = new Set([
     'ONLINE', 'OFFLINE', 'SHOW_REQUESTS', 'TAKE', 'FILTER', 'CLEAR_FILTERS',
     'NEXT', 'END_RIDE', 'CANCEL_RIDE', 'MY_RIDES', 'HELP', 'PROFILE',
   ]);
   return {
-    role: allowedRoles.has(data.role)? data.role : 'chat',
-    command: allowedCommands.has(data.command)? data.command : null,
-    filter: typeof data.filter === 'string'? cleanText(data.filter, MAX_LOCATION_LENGTH) : null,
+    role: allowedRoles.has(data.role) ? data.role : 'chat',
+    command: allowedCommands.has(data.command) ? data.command : null,
+    filter: typeof data.filter === 'string' ? cleanText(data.filter, MAX_LOCATION_LENGTH) : null,
     takeId: clampInteger(data.takeId, 1, Number.MAX_SAFE_INTEGER, null),
-    from: typeof data.from === 'string'? cleanText(data.from, MAX_LOCATION_LENGTH) : null,
-    to: typeof data.to === 'string'? cleanText(data.to, MAX_LOCATION_LENGTH) : null,
-    date: typeof data.date === 'string'? data.date : null,
-    time: typeof data.time === 'string'? data.time : null,
+    from: typeof data.from === 'string' ? cleanText(data.from, MAX_LOCATION_LENGTH) : null,
+    to: typeof data.to === 'string' ? cleanText(data.to, MAX_LOCATION_LENGTH) : null,
+    date: typeof data.date === 'string' ? data.date : null,
+    time: typeof data.time === 'string' ? data.time : null,
     seats: clampInteger(data.seats, 1, MAX_SEATS, null),
-    name: typeof data.name === 'string'? cleanText(data.name, MAX_NAME_LENGTH) : null,
+    name: typeof data.name === 'string' ? cleanText(data.name, MAX_NAME_LENGTH) : null,
   };
 }
 
 function mergeDraft(draft, ai, region) {
   const merged = {
-  ...draft,
-    role: ai.role === 'rider' || ai.role === 'driver'? ai.role : draft.role,
+    ...draft,
+    role: ai.role === 'rider' || ai.role === 'driver' ? ai.role : draft.role,
   };
   if (ai.from && isValidLocation(ai.from)) merged.from = ai.from;
   if (ai.to && isValidLocation(ai.to)) merged.to = ai.to;
@@ -701,12 +702,12 @@ async function parseWithAI(message, region, contextDraft = {}, lastIntent = null
   const local = getLocalParts(new Date(), region.timezone);
   const todayInfo = `${local.weekday} ${todayDate} ${local.hour}:${local.minute}`;
   const prompt = SYSTEM_PROMPT
-  .replace('{COUNTRY}', region.country)
-  .replace('{TIMEZONE}', region.timezone)
-  .replace('{TODAY_INFO}', todayInfo)
-  .replace('{TODAY_DATE}', todayDate)
-  .replace('{CONTEXT_DRAFT}', JSON.stringify(contextDraft || {}))
-  .replace('{LAST_INTENT}', String(lastIntent || 'none'));
+    .replace('{COUNTRY}', region.country)
+    .replace('{TIMEZONE}', region.timezone)
+    .replace('{TODAY_INFO}', todayInfo)
+    .replace('{TODAY_DATE}', todayDate)
+    .replace('{CONTEXT_DRAFT}', JSON.stringify(contextDraft || {}))
+    .replace('{LAST_INTENT}', String(lastIntent || 'none'));
   try {
     const response = await axios.post(GROQ_URL, {
       model: GROQ_MODELS[0],
@@ -728,8 +729,8 @@ async function parseWithAI(message, region, contextDraft = {}, lastIntent = null
     const content = response.data?.choices?.[0]?.message?.content;
     if (!content) return { role: 'chat' };
     const data = validateAIResult(JSON.parse(content));
-    if (data.from &&!isValidLocation(data.from)) data.from = null;
-    if (data.to &&!isValidLocation(data.to)) data.to = null;
+    if (data.from && !isValidLocation(data.from)) data.from = null;
+    if (data.to && !isValidLocation(data.to)) data.to = null;
     if (data.date) data.date = getRealDate(data.date, region.timezone);
     if (data.time) data.time = getRealTime(data.time, region.timezone);
     return data;
@@ -744,8 +745,8 @@ function deterministicIntent(text, region, draft = {}) {
   const lower = value.toLowerCase();
   const result = { role: 'chat', command: null, filter: null, takeId: null, from: null, to: null, date: null, time: null, seats: null, name: null };
   const direct = parseDirectCommand(value);
-  if (direct) return {...result,...direct, role: 'command' };
-  if (/^\d+$/.test(lower)) return {...result, role: 'command', command: 'TAKE', takeId: Number(lower) };
+  if (direct) return { ...result, ...direct, role: 'command' };
+  if (/^\d+$/.test(lower)) return { ...result, role: 'command', command: 'TAKE', takeId: Number(lower) };
   const wantsRide = /\b(need|want|looking for|book|find|request)\b.*\b(ride|lift|pickup|car)\b/i.test(value) || /\bneed a ride\b/i.test(value);
   const offersRide = /\b(can give|give|offer|driving|drive|taking|take someone|have space)\b.*\b(ride|lift|passenger|people|from)\b/i.test(value);
   const route = value.match(/\bfrom\s+(.+?)\s+to\s+(.+?)(?:\s+(?:at|on|tomorrow|today|for)\b|$)/i);
@@ -784,7 +785,6 @@ function parseDirectCommand(text) {
   const take = value.match(/^(?:take|accept|book)\s+(\d+)$/i);
   if (take) return { command: 'TAKE', takeId: Number(take[1]) };
   return null;
-      }
 }
 
 async function handleDirectCommand(cmd, phoneJid, userPhoneKey, region) {
@@ -823,7 +823,7 @@ async function handleDirectCommand(cmd, phoneJid, userPhoneKey, region) {
     user.onlineDate = getLocalDateString(new Date(), region.timezone);
     await user.save();
     const rides = await getOpenRides();
-    const filtered = filter ? rides.filter(ride => !isPollutedRide(ride) && (areLocationsNearby(filter, ride.from) || areLocationsNearby(filter, ride.to))) : rides.filter(ride => !isPollutedRide(ride)));
+    const filtered = filter ? rides.filter(ride => !isPollutedRide(ride) && (areLocationsNearby(filter, ride.from) || areLocationsNearby(filter, ride.to))) : rides.filter(ride => !isPollutedRide(ride));
     await sendWhatsAppMessage(phoneJid, filter ? `ONLINE near ${filter}. Rating: ${Number(user.rating || 5).toFixed(1)}★` : `ONLINE. Rating: ${Number(user.rating || 5).toFixed(1)}★`);
     await sendRidesList(phoneJid, filtered, filter ? `${filtered.length} RIDES NEAR ${filter.toUpperCase()}:` : `${filtered.length} OPEN RIDES:`, 0, region.timezone);
     return;
@@ -894,7 +894,6 @@ async function handleDirectCommand(cmd, phoneJid, userPhoneKey, region) {
   }
 }
 
-
 async function handleNameMessage(phoneJid, phone, text) {
   const name = parseNameCommand(text);
   if (!name) return false;
@@ -906,7 +905,7 @@ async function handleNameMessage(phoneJid, phone, text) {
 }
 
 async function createRideFromDraft(phoneJid, phone, draft, region) {
-  if (!draft.from ||!draft.to) return false;
+  if (!draft.from || !draft.to) return false;
   if (locationsEqual(draft.from, draft.to)) {
     await sendWhatsAppMessage(phoneJid, `From and to cannot be the same (${draft.from}).`);
     return false;
@@ -924,10 +923,10 @@ async function createRideFromDraft(phoneJid, phone, draft, region) {
   });
   const displayDate = toDisplayDate(date, region.timezone);
   await sendWhatsAppMessage(phoneJid,
-    `RIDE ${ride.id} CREATED\n${ride.from} → ${ride.to}\n${displayDate} • ${toDisplayTime(ride.time)} • ${seats} ${seats === 1? 'seat' : 'seats'}\nAlerting suitable drivers...`);
+    `RIDE ${ride.id} CREATED\n${ride.from} → ${ride.to}\n${displayDate} • ${toDisplayTime(ride.time)} • ${seats} ${seats === 1 ? 'seat' : 'seats'}\nAlerting suitable drivers...`);
   const notified = await notifyMatchingDrivers(ride, region);
   if (!notified) await sendWhatsAppMessage(phoneJid, 'No suitable online drivers were found yet. Your request remains open.');
-  else await sendWhatsAppMessage(phoneJid, `${notified} online driver${notified === 1? '' : 's'} notified.`);
+  else await sendWhatsAppMessage(phoneJid, `${notified} online driver${notified === 1 ? '' : 's'} notified.`);
   clearSession(phone);
   return true;
 }
@@ -935,13 +934,13 @@ async function createRideFromDraft(phoneJid, phone, draft, region) {
 async function continueDraft(phoneJid, phone, rawText, region, session) {
   const draft = session.draft || {};
   if (!draft.role) return false;
-  if (!draft.from && isValidLocation(rawText) &&!getRealTime(rawText, region.timezone)) {
+  if (!draft.from && isValidLocation(rawText) && !getRealTime(rawText, region.timezone)) {
     draft.from = rawText;
     session.draft = draft;
     await sendWhatsAppMessage(phoneJid, `Got it, from ${rawText}. Where to? Example: ${region.exampleDest}`);
     return true;
   }
-  if (draft.from &&!draft.to && isValidLocation(rawText) &&!getRealTime(rawText, region.timezone)) {
+  if (draft.from && !draft.to && isValidLocation(rawText) && !getRealTime(rawText, region.timezone)) {
     if (locationsEqual(draft.from, rawText)) {
       await sendWhatsAppMessage(phoneJid, `From and to cannot be the same (${draft.from}). Where to?`);
       return true;
@@ -1077,7 +1076,7 @@ async function handleRideLogic(phoneJid, text, realPhone) {
       const rides = await getOpenRides();
       const matching = filterRidesForDriver(rides, draft.from, draft.to, draft.date || null);
       await sendWhatsAppMessage(phoneJid,
-        `You're ONLINE for ${draft.from} → ${draft.to}. ${matching.length} matching ride${matching.length === 1? '' : 's'} available.`);
+        `You're ONLINE for ${draft.from} → ${draft.to}. ${matching.length} matching ride${matching.length === 1 ? '' : 's'} available.`);
       if (matching.length) await sendRidesList(phoneJid, matching, 'MATCHING RIDES:', 0, region.timezone);
       else await sendWhatsAppMessage(phoneJid, 'No route-matching requests right now. I will keep you online for the next 2 hours.');
       clearSession(phone);
@@ -1147,7 +1146,7 @@ function extractMessageText(message) {
 function registerMessageHandler(socket) {
   if (!socket) return;
   socket.ev.on('messages.upsert', async ({ messages, type }) => {
-    if (type!== 'notify' && type!== 'append') return;
+    if (type !== 'notify' && type !== 'append') return;
     for (const msg of messages || []) {
       try {
         if (!msg?.message || msg.key?.fromMe) continue;
@@ -1158,8 +1157,8 @@ function registerMessageHandler(socket) {
         if (!text) continue;
         let realPhone = remoteJid;
         if (remoteJid.includes('@lid')) {
-          if (msg.key?.participant &&!msg.key.participant.includes('@lid')) realPhone = msg.key.participant;
-          else if (msg.key?.remoteJidAlt &&!msg.key.remoteJidAlt.includes('@lid')) realPhone = msg.key.remoteJidAlt;
+          if (msg.key?.participant && !msg.key.participant.includes('@lid')) realPhone = msg.key.participant;
+          else if (msg.key?.remoteJidAlt && !msg.key.remoteJidAlt.includes('@lid')) realPhone = msg.key.remoteJidAlt;
         }
         const phone = canonicalPhone(realPhone, remoteJid);
         if (!phone) continue;
@@ -1273,7 +1272,7 @@ function adminOnly(req, res, next) {
   const secret = process.env.ADMIN_SECRET;
   if (!secret) return res.status(503).send('Admin API disabled: ADMIN_SECRET is not configured');
   const auth = req.get('authorization') || '';
-  if (auth!== `Bearer ${secret}`) return res.status(401).send('Unauthorized');
+  if (auth !== `Bearer ${secret}`) return res.status(401).send('Unauthorized');
   next();
 }
 
@@ -1355,7 +1354,7 @@ app.post('/clearall', adminOnly, async (req, res) => {
 app.post('/cleardb', adminOnly, async (req, res) => {
   try {
     const confirmation = req.get('x-confirm-db-wipe');
-    if (confirmation!== 'WIPE_DATABASE') return res.status(400).send('Database wipe blocked. Set X-Confirm-DB-Wipe: WIPE_DATABASE.');
+    if (confirmation !== 'WIPE_DATABASE') return res.status(400).send('Database wipe blocked. Set X-Confirm-DB-Wipe: WIPE_DATABASE.');
     await sequelize.sync({ force: true });
     activeChats.clear();
     userSessions.clear();
