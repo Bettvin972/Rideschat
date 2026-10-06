@@ -2034,7 +2034,8 @@ function qaTestProfileFormatting() {
     location: 'Juja',
     rating: 4.8,
     ratingCount: 27,
-    ridesCompleted: 10,    ridesOffered: 4,
+    ridesCompleted: 10,
+    ridesOffered: 4,
     ridesRequested: 8,
     usernameChangeCount: 1,
     isOnline: true,
@@ -2266,6 +2267,99 @@ function qaTestExpiryRules() {
   qaAssert('taken request hidden', !isRideCurrentlyActionable({ ...future, status: 'TAKEN' }));
 }
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Induu server running on port ${PORT}`);
+// WhatsApp Baileys Connection Setup
+async function startWhatsApp() {
+  if (startingWhatsApp) return;
+  startingWhatsApp = true;
+
+  try {
+    const { state, saveCreds } = await useMultiFileAuthState(AUTH_PATH);
+    const { version } = await fetchLatestBaileysVersion();
+
+    sock = makeWASocket({
+      version,
+      auth: state,
+      logger: pino({ level: 'silent' }),
+      printQRInTerminal: true,
+    });
+
+    sock.ev.on('creds.update', saveCreds);
+
+    sock.ev.on('connection.update', (update) => {
+      const { connection, lastDisconnect, qr } = update;
+      if (qr) {
+        qrLast = qr;
+        console.log('QR Code received, scan it with WhatsApp if running locally.');
+      }
+      if (connection === 'close') {
+        const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+        console.log('WhatsApp connection closed. Reconnecting:', shouldReconnect);
+        sock = null;
+        if (shouldReconnect) {
+          clearTimeout(reconnectTimer);
+          reconnectTimer = setTimeout(() => {
+            startingWhatsApp = false;
+            startWhatsApp();
+          }, 5000);
+        }
+      } else if (connection === 'open') {
+        console.log('WhatsApp connection opened successfully!');
+        startingWhatsApp = false;
+      }
+    });
+
+    sock.ev.on('messages.upsert', async ({ messages, type }) => {
+      if (type !== 'notify') return;
+      for (const msg of messages) {
+        if (!msg.message || msg.key.fromMe) continue;
+        const remoteJid = msg.key.remoteJid;
+        if (!remoteJid || remoteJid.endsWith('@g.us')) continue; // Skip group chats
+
+        const text =
+          msg.message.conversation ||
+          msg.message.extendedTextMessage?.text ||
+          '';
+
+        if (!text.trim()) continue;
+
+        const realPhone = normalizePhone(remoteJid);
+        await queueUserMessage(realPhone, async () => {
+          await handleRideLogic(remoteJid, text, realPhone);
+        });
+      }
+    });
+  } catch (err) {
+    console.error('Failed to start WhatsApp:', err);
+    startingWhatsApp = false;
+    setTimeout(() => {
+      startWhatsApp();
+    }, 10000);
+  }
+}
+
+// HTTP route to view the WhatsApp QR code status
+app.get('/qr', (req, res) => {
+  if (!qrLast) return res.send('No QR code generated yet or already connected.');
+  res.send(`<h1>WhatsApp QR Code</h1><p>Scan this string or check terminal logs:</p><pre>${qrLast}</pre>`);
 });
+
+app.get('/', (req, res) => {
+  res.send('Induu WhatsApp Bot server is running!');
+});
+
+// Initialize database and start server + WhatsApp connection
+async function main() {
+  try {
+    await initDatabase();
+    console.log('Database initialized successfully.');
+  } catch (err) {
+    console.error('Database initialization error:', err);
+  }
+
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Induu server running on port ${PORT}`);
+    startWhatsApp();
+  });
+}
+
+main();
