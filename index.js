@@ -25,6 +25,31 @@ app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 const PORT = Number(process.env.PORT || 10000);
+
+let server = null;
+let serverReady = false;
+try {
+  server = app.listen(PORT, '0.0.0.0', () => {
+    serverReady = true;
+    console.log(`INDUU HTTP SERVER READY on 0.0.0.0:${PORT}`);
+  });
+  server.on('error', (err) => {
+    console.error('HTTP SERVER ERROR:', err?.stack || err?.message || err);
+  });
+} catch (err) {
+  console.error('HTTP SERVER BIND ERROR:', err?.stack || err?.message || err);
+}
+
+app.get('/health', (req, res) => {
+  res.status(200).json({
+    ok: true,
+    service: 'induu',
+    serverReady,
+    uptimeSeconds: Math.floor(process.uptime()),
+    timestamp: new Date().toISOString(),
+  });
+});
+
 const AUTH_PATH = path.join(__dirname, 'auth_info');
 const PAGE_SIZE = 20;
 const DEFAULT_ONLINE_HOURS = 2;
@@ -664,10 +689,12 @@ async function sendGupshupMessage(toJid, text) {
     return false;
   }
 }
+
 function buildDirectWhatsAppLink(phone) {
   const normalized = normalizePhone(phone);
   return normalized ? `https://wa.me/${normalized}` : '';
 }
+
 async function sendDirectContact(toJid, contactPhone, displayName, rideId, roleLabel) {
   const phone = normalizePhone(contactPhone);
   if (!phone || !sock) return false;
@@ -691,6 +718,7 @@ async function sendDirectContact(toJid, contactPhone, displayName, rideId, roleL
     return false;
   }
 }
+
 async function sendDirectConnectionDetails(toJid, contactPhone, displayName, rideId, roleLabel) {
   const phone = normalizePhone(contactPhone);
   if (!phone) return false;
@@ -845,6 +873,7 @@ async function checkAndForwardChat(phoneJid, text, realPhone) {
     return false;
   }
 }
+
 function setActiveChat(a, b, rideId) {
   const left = normalizePhone(a);
   const right = normalizePhone(b);
@@ -873,7 +902,9 @@ const INDUU_SELF_KNOWLEDGE = {
   commands: {HELP:'Shows help.',PROFILE:'Shows the profile.',MY_RIDES:'Shows recent rides.',ONLINE:'Makes a driver available and can filter by area.',OFFLINE:'Marks a driver offline.','SHOW RIDES':'Shows actionable open rides.',TAKE:'Accepts an open ride, e.g. TAKE 123.',USERNAME:'Changes username when permitted.',LOCATION:'Changes default location.',EXTEND:'Extends an eligible open ride.', 'CANCEL RIDE':'Cancels the rider’s open request.','END RIDE':'Completes an accepted ride.',NEXT:'Next ride-list page.',BACK:'Previous ride-list page.',CLEAR:'Clears a ride-area filter.'},
   rideStates: {OPEN:'Available to eligible drivers while its request window is active.',TAKEN:'Accepted by a driver; rider and driver are connected.',COMPLETED:'Trip completed.',CANCELLED:'Cancelled by the rider.',EXPIRED:'Request window ended before acceptance.'}
 };
+
 function indUUHelpText(){return ['*INDUU — WHAT I CAN DO*','','I am primarily your ride assistant, but I can also answer general questions.','','*Rides*','• Need a ride: "Need a ride from Juja to Nairobi tomorrow at 8am"','• Driver mode: "I am driving Juja to Nairobi"','• See rides: SHOW RIDES','• Driver availability: ONLINE / OFFLINE','• Accept: TAKE 123, ACCEPT 123, CLAIM 123, or reply 123 when a ride is offered','','*Account*','• PROFILE — view your profile','• MY RIDES — view recent rides','• USERNAME newname — update username when permitted','• LOCATION Juja — update your default location','','*Ride management*','• EXTEND RIDE 123','• CANCEL RIDE 123','• END RIDE','','Ask me "How do I update my profile?", "Why can’t I accept a ride?", or "What does ONLINE do?" and I can explain.'].join('\n');}
+
 function isInduuSelfQuestion(text){
   const l=String(text||'').toLowerCase().trim();
   return /\b(?:who are you|what are you|what can you do|what do you do|how do you work|how does induu work|what is induu|tell me about induu|your commands|commands|help me|update .*profile|edit .*profile|change .*profile|change .*username|update .*username|change .*location|update .*location|what does online do|what does offline do|how do i accept|how can i accept|why can.?t i accept|why is .* ride .* unavailable|what do .* ride .* mean|ride status|ride states|what happens after .*accept|how do ratings work|how do i rate|how do i cancel .*ride|how do i extend .*ride|how do i end .*ride|how do i complete .*ride|why was .* ride .* expired|what happened to .* ride|where is my ride|is my ride|my ride .* status|why am i offline|am i online)\b/i.test(l);
@@ -889,6 +920,7 @@ function hasExpired(ride) {
   if (!ride || !ride.expiresAt) return false;
   return new Date(ride.expiresAt).getTime() <= Date.now();
 }
+
 function dynamicRideStateLabel(ride, now = new Date()){
   if(!ride) return 'UNKNOWN';
   const status=String(ride.status||'').toUpperCase();
@@ -2238,36 +2270,4 @@ function qaTestTimeZoneRoundTrip() {
 function qaTestRideStatusVocabulary() {
   const allowed = ['OPEN', 'TAKEN', 'COMPLETED', 'CANCELLED', 'EXPIRED'];
   for (const value of allowed) qaAssert(`status allowed: ${value}`, allowed.includes(value));
-  qaAssert('status vocabulary has open', allowed.includes('OPEN'));
-  qaAssert('status vocabulary has taken', allowed.includes('TAKEN'));
-  qaAssert('status vocabulary has completed', allowed.includes('COMPLETED'));
-  qaAssert('status vocabulary has cancelled', allowed.includes('CANCELLED'));
-  qaAssert('status vocabulary has expired', allowed.includes('EXPIRED'));
-}
-
-function qaTestMessageSafety() {
-  const samples = [
-    'Need a ride from Juja to Nairobi tomorrow',
-    'I need 2 seats from JKUAT Main Gate to KNH at 5:30pm',
-    'Need ride now',
-    'ONLINE Juja',
-    'TAKE 142',
-    'BACK',
-  ];
-  for (const sample of samples) {
-    qaAssert(`message remains string: ${sample}`, typeof sample === 'string');
-    qaAssert(`message has bounded size: ${sample}`, sample.length < 1000);
-  }
-}
-
-function qaTestRatingDisplay() {
-  qaEqual('new rider rating label', Number(0), 0);
-  qaEqual('rated user display value', Number(4.8).toFixed(1), '4.8');
-  qaEqual('rating count display', Number(27), 27);
-}
-
-function qaTestSeatDisplay() {
-  qaEqual('one seat singular', `1 ${1 === 1 ? 'person' : 'people'}`, '1 person');
-  qaEqual('two seats plural', `2 ${2 === 1 ? 'person' : 'people'}`, '2 people');
-  qaEqual('six seats plural', `6 ${6 === 1 ? 'person' : 'people'}`, '6 people');
 }
