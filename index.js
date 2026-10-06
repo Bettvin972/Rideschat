@@ -19,11 +19,11 @@ const {
   DisconnectReason,
   fetchLatestBaileysVersion,
 } = require('@whiskeysockets/baileys');
- 
+
 const app = express();
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true }));
- 
+
 const PORT = Number(process.env.PORT || 10000);
 const AUTH_PATH = path.join(__dirname, 'auth_info');
 const PAGE_SIZE = 20;
@@ -40,37 +40,37 @@ const GROQ_MODEL = 'openai/gpt-oss-20b';
 const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
 const MAINTENANCE_INTERVAL_MS = 60 * 1000;
 const SESSION_TTL_MS = 45 * 60 * 1000;
- 
+
 let sock = null;
 let qrLast = null;
 let reconnectTimer = null;
 let startingWhatsApp = false;
- 
+
 const userSessions = new Map();
 const activeChats = new Map();
 const ratingSessions = new Map();
 const endingLocks = new Set();
 const userQueues = new Map();
- 
+
 function normalizePhone(value) {
   if (!value) return '';
   return String(value).split('@')[0].replace(/[^0-9]/g, '');
 }
- 
+
 function canonicalPhone(realPhone, remoteJid) {
   return normalizePhone(realPhone) || normalizePhone(remoteJid);
 }
- 
+
 function jidFor(value) {
   if (!value) return '';
   if (String(value).includes('@')) return String(value);
   return `${normalizePhone(value)}@s.whatsapp.net`;
 }
- 
+
 function getSessionKey(value) {
   return normalizePhone(value) || String(value || '');
 }
- 
+
 function getSession(phone) {
   const key = getSessionKey(phone);
   if (!userSessions.has(key)) {
@@ -86,11 +86,11 @@ function getSession(phone) {
   session.updatedAt = Date.now();
   return session;
 }
- 
+
 function clearSession(phone) {
   userSessions.delete(getSessionKey(phone));
 }
- 
+
 function mergeDraft(existing, updates) {
   return {
     ...(existing || {}),
@@ -98,27 +98,27 @@ function mergeDraft(existing, updates) {
     role: (updates && updates.role) || (existing && existing.role),
   };
 }
- 
+
 function queueUserMessage(phone, task) {
   const key = getSessionKey(phone) || 'unknown';
   const previous = userQueues.get(key) || Promise.resolve();
- 
+
   const next = previous
     .catch(() => {})
     .then(task)
     .catch((err) => {
       console.error('User queue error:', err?.stack || err?.message || err);
     });
- 
+
   userQueues.set(key, next);
- 
+
   next.finally(() => {
     if (userQueues.get(key) === next) userQueues.delete(key);
   }).catch(() => {});
- 
+
   return next;
 }
- 
+
 function detectUserRegion(jid) {
   const raw = normalizePhone(jid);
   if (raw.startsWith('254')) {
@@ -159,7 +159,7 @@ function detectUserRegion(jid) {
     flag: '🇺🇸',
   };
 }
- 
+
 function getUserNow(timezone = DEFAULT_TIMEZONE) {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: timezone,
@@ -171,11 +171,11 @@ function getUserNow(timezone = DEFAULT_TIMEZONE) {
     second: '2-digit',
     hourCycle: 'h23',
   }).formatToParts(new Date());
- 
+
   const v = Object.fromEntries(
     parts.filter((p) => p.type !== 'literal').map((p) => [p.type, p.value])
   );
- 
+
   return new Date(Date.UTC(
     Number(v.year),
     Number(v.month) - 1,
@@ -185,7 +185,7 @@ function getUserNow(timezone = DEFAULT_TIMEZONE) {
     Number(v.second)
   ));
 }
- 
+
 function getLocalDateString(date = new Date(), timezone = DEFAULT_TIMEZONE) {
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: timezone,
@@ -193,20 +193,20 @@ function getLocalDateString(date = new Date(), timezone = DEFAULT_TIMEZONE) {
     month: '2-digit',
     day: '2-digit',
   }).formatToParts(date);
- 
+
   const v = Object.fromEntries(
     parts.filter((p) => p.type !== 'literal').map((p) => [p.type, p.value])
   );
- 
+
   return `${v.year}-${v.month}-${v.day}`;
 }
- 
+
 function addLocalDays(date, days, timezone = DEFAULT_TIMEZONE) {
   const base = date instanceof Date ? new Date(date) : getUserNow(timezone);
   base.setUTCDate(base.getUTCDate() + Number(days || 0));
   return base;
 }
- 
+
 function getTimeGreeting(timezone) {
   const h = getUserNow(timezone).getUTCHours();
   if (h >= 5 && h < 12) return 'Good morning';
@@ -214,25 +214,25 @@ function getTimeGreeting(timezone) {
   if (h >= 15 && h < 19) return 'Good evening';
   return 'Hello';
 }
- 
+
 function isValidDateString(value) {
   return /^\d{4}-\d{2}-\d{2}$/.test(String(value || ''));
 }
- 
+
 function dateFromLocalParts(year, month, day) {
   const d = new Date(Date.UTC(year, month - 1, day));
   return d;
 }
- 
+
 function getRealDate(value, timezone = DEFAULT_TIMEZONE) {
   const today = getLocalDateString(new Date(), timezone);
   if (!value) return today;
- 
+
   const s = String(value).toLowerCase().trim();
   if (isValidDateString(s)) return s;
- 
+
   const now = getUserNow(timezone);
- 
+
   if (s.includes('day after tomorrow')) {
     return getLocalDateString(addLocalDays(now, 2, timezone), timezone);
   }
@@ -245,28 +245,28 @@ function getRealDate(value, timezone = DEFAULT_TIMEZONE) {
   if (/\b(today|now|asap|right now)\b/.test(s) || s === 'null') {
     return today;
   }
- 
+
   const weekdays = [
     'sunday', 'monday', 'tuesday', 'wednesday',
     'thursday', 'friday', 'saturday',
   ];
- 
+
   for (const dayName of weekdays) {
     if (!new RegExp(`\\b${dayName}\\b`, 'i').test(s)) continue;
- 
+
     const target = weekdays.indexOf(dayName);
     const current = now.getUTCDay();
     let diff = target - current;
- 
+
     if (s.includes('this ')) {
       if (diff < 0) diff += 7;
     } else {
       if (diff <= 0) diff += 7;
     }
- 
+
     return getLocalDateString(addLocalDays(now, diff, timezone), timezone);
   }
- 
+
   const parsed = new Date(s);
   if (!Number.isNaN(parsed.getTime())) {
     const year = parsed.getFullYear();
@@ -274,59 +274,59 @@ function getRealDate(value, timezone = DEFAULT_TIMEZONE) {
     const day = parsed.getDate();
     return `${year.toString().padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
   }
- 
+
   return today;
 }
- 
+
 function getRealTime(value, timezone = DEFAULT_TIMEZONE) {
   if (!value) return null;
- 
+
   let s = String(value).toLowerCase().trim();
   const wordMap = {
     one: '1', two: '2', three: '3', four: '4', five: '5',
     six: '6', seven: '7', eight: '8', nine: '9',
     ten: '10', eleven: '11', twelve: '12',
   };
- 
+
   for (const [word, number] of Object.entries(wordMap)) {
     s = s.replace(new RegExp(`\\b${word}\\b`, 'g'), number);
   }
- 
+
   if (['now', 'asap', 'just now', 'immediately', 'now now', 'right now'].includes(s)) {
     const now = getUserNow(timezone);
     return `${String(now.getUTCHours()).padStart(2, '0')}:${String(now.getUTCMinutes()).padStart(2, '0')}`;
   }
- 
+
   if (/\b(this )?morning\b/.test(s)) return '09:00';
   if (/\b(this )?afternoon\b/.test(s)) return '14:00';
   if (/\b(evening|tonight)\b/.test(s)) return '19:00';
- 
+
   const m = s.match(/\b(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/);
   if (!m) return null;
- 
+
   let h = Number(m[1]);
   const min = Number(m[2] || 0);
   const ap = m[3];
- 
+
   if (ap === 'pm' && h < 12) h += 12;
   if (ap === 'am' && h === 12) h = 0;
- 
+
   if (!ap && h >= 1 && h <= 7) {
     return null;
   }
- 
+
   if (h < 0 || h > 23 || min < 0 || min > 59) return null;
   return `${String(h).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
 }
- 
+
 function extractDeterministicFields(text, timezone) {
   const raw = String(text || '').trim();
   const lower = raw.toLowerCase();
- 
+
   let date = null;
   let time = null;
   let seats = null;
- 
+
   if (/\bday after tomorrow\b/.test(lower)) date = getRealDate('day after tomorrow', timezone);
   else if (/\btomorrow\b/.test(lower)) date = getRealDate('tomorrow', timezone);
   else if (/\btoday\b|\btonight\b|\bnow\b|\basap\b|\bright now\b/.test(lower)) {
@@ -335,7 +335,7 @@ function extractDeterministicFields(text, timezone) {
     const weekdays = /\b(this|next)?\s*(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i.exec(lower);
     if (weekdays) date = getRealDate(weekdays[0], timezone);
   }
- 
+
   const timePatterns = [
     /\b(?:at|around|by)\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b/i,
     /\b\d{1,2}(?::\d{2})\s*(?:am|pm)\b/i,
@@ -343,7 +343,7 @@ function extractDeterministicFields(text, timezone) {
     /\b(?:nine|ten|eleven|twelve|one|two|three|four|five|six|seven|eight)\s+(?:am|pm|in the morning|in the afternoon|in the evening|at night)\b/i,
     /\b(?:this morning|this afternoon|this evening|tonight)\b/i,
   ];
- 
+
   for (const pattern of timePatterns) {
     const match = lower.match(pattern);
     if (match) {
@@ -351,22 +351,22 @@ function extractDeterministicFields(text, timezone) {
       if (time) break;
     }
   }
- 
+
   if (!time && /\b(?:now|asap|right now|immediately)\b/.test(lower)) {
     time = getRealTime('now', timezone);
   }
- 
+
   const seatMatch = lower.match(/\b(?:for|with)\s+(\d{1,2})\s+(?:people|persons|passengers|seats)\b/)
     || lower.match(/\b(\d{1,2})\s+(?:people|persons|passengers)\b/)
     || lower.match(/\bme\s*\+\s*(\d{1,2})\b/);
- 
+
   if (seatMatch) {
     seats = Math.max(1, Math.min(6, Number(seatMatch[1])));
   }
- 
+
   return { date, time, seats };
 }
- 
+
 function normalizeLocation(locStr) {
   if (!locStr) return '';
   return String(locStr)
@@ -375,39 +375,39 @@ function normalizeLocation(locStr) {
     .replace(/\s+/g, ' ')
     .trim();
 }
- 
+
 function locationWords(value) {
   return normalizeLocation(value).split(/\s+/).filter(Boolean);
 }
- 
+
 function areLocationsNearby(locA, locB) {
   const a = normalizeLocation(locA);
   const b = normalizeLocation(locB);
   if (!a || !b) return false;
   if (a === b || a.includes(b) || b.includes(a)) return true;
- 
+
   const aWords = locationWords(a);
   const bWords = new Set(locationWords(b));
- 
+
   return aWords.some((word) => word.length >= 4 && bWords.has(word));
 }
- 
+
 function isValidLocation(value) {
   if (!value) return false;
   const raw = String(value).trim();
   const l = normalizeLocation(raw);
- 
+
   if (l.length < 3 || l.length > 60) return false;
- 
+
   const badExact = new Set([
     'hi', 'hello', 'hey', 'hii', 'heyy', 'yo',
     'online', 'offline', 'thanks', 'thank you',
     'where is', 'what is', 'who is', 'when did',
     'need a ride', 'need ride', 'i need a ride',
   ]);
- 
+
   if (badExact.has(l)) return false;
- 
+
   const badPhrase = [
     /\bneed\s+(?:a\s+)?ride\b/i,
     /\bi\s+need\b/i,
@@ -418,14 +418,14 @@ function isValidLocation(value) {
     /\bwhen\s+did\b/i,
     /\bhow\s+much\b/i,
   ];
- 
+
   return !badPhrase.some((re) => re.test(l));
 }
- 
+
 function isCommandPhrase(value) {
   if (!value) return true;
   const l = normalizeLocation(value);
- 
+
   const exact = new Set([
     'i want to give ride',
     'give ride',
@@ -445,53 +445,53 @@ function isCommandPhrase(value) {
     'ok',
     'okay',
   ]);
- 
+
   return exact.has(l);
 }
- 
+
 function isPollutedRide(ride) {
   const fields = [
     ride?.from || '',
     ride?.to || '',
     ride?.date || '',
   ].map((v) => String(v).toLowerCase());
- 
+
   const suspicious = [
     /\bwhere\b/, /\bwho\b/, /\bwhat\b/, /\bwhen\b/, /\bwhy\b/,
     /\bpresident\b/, /\bfounder\b/, /\bfilter\b/, /\bavailable\b/,
   ];
- 
+
   if (fields.some((field) => suspicious.some((re) => re.test(field)))) return true;
- 
+
   const from = String(ride?.from || '').trim();
   const to = String(ride?.to || '').trim();
- 
+
   return !isValidLocation(from) || !isValidLocation(to);
 }
- 
+
 function toDisplayTime(time) {
   if (!time || time === 'Flexible') return 'now';
   const [hRaw, mRaw] = String(time).split(':');
   const h = Number(hRaw);
   const m = Number(mRaw || 0);
   if (!Number.isFinite(h)) return String(time);
- 
+
   return `${h % 12 || 12}:${String(m).padStart(2, '0')} ${h >= 12 ? 'PM' : 'AM'}`;
 }
- 
+
 function toDisplayDate(date, timezone) {
   if (!date) return '';
   if (!isValidDateString(date)) return String(date);
- 
+
   const today = getLocalDateString(new Date(), timezone);
   const tomorrow = getLocalDateString(
     addLocalDays(getUserNow(timezone), 1, timezone),
     timezone
   );
- 
+
   if (date === today) return 'Today';
   if (date === tomorrow) return 'Tomorrow';
- 
+
   const [y, m, d] = date.split('-').map(Number);
   return new Date(Date.UTC(y, m - 1, d, 12))
     .toLocaleDateString('en-US', {
@@ -501,18 +501,18 @@ function toDisplayDate(date, timezone) {
       timeZone: 'UTC',
     });
 }
- 
+
 function getTimeZoneParts(date, timezone = DEFAULT_TIMEZONE) {
   const parts = new Intl.DateTimeFormat('en-US', { timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).formatToParts(date);
   const values = Object.fromEntries(parts.filter((part) => part.type !== 'literal').map((part) => [part.type, Number(part.value)]));
   return { year: values.year, month: values.month, day: values.day, hour: values.hour, minute: values.minute, second: values.second };
 }
- 
+
 function getTimeZoneOffsetMs(date, timezone = DEFAULT_TIMEZONE) {
   const parts = getTimeZoneParts(date, timezone);
   return Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second) - date.getTime();
 }
- 
+
 function zonedDateTimeToUtc(dateString, timeString, timezone = DEFAULT_TIMEZONE) {
   if (!isValidDateString(dateString) || !timeString) return null;
   const match = String(timeString).trim().match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
@@ -530,14 +530,14 @@ function zonedDateTimeToUtc(dateString, timeString, timezone = DEFAULT_TIMEZONE)
   }
   return guess.getTime();
 }
- 
+
 function getScheduledTimestamp(rideDate, rideTime, timezone = DEFAULT_TIMEZONE) {
   if (!rideDate || !rideTime || String(rideTime).toLowerCase() === 'flexible') return null;
   if (!isValidDateString(rideDate)) return null;
   if (String(rideTime).toLowerCase() === 'now') return Date.now();
   return zonedDateTimeToUtc(rideDate, rideTime, timezone);
 }
- 
+
 function formatRemainingRideTime(diffMinutes) {
   const rounded = Math.max(0, Math.round(Number(diffMinutes) || 0));
   if (rounded <= 0) return 'NOW';
@@ -546,7 +546,7 @@ function formatRemainingRideTime(diffMinutes) {
   const minutes = rounded % 60;
   return minutes ? `${hours} hr ${minutes} min` : `${hours} hr`;
 }
- 
+
 function getCountdownText(rideTime, rideDate, timezone) {
   const targetMs = getScheduledTimestamp(rideDate, rideTime, timezone);
   if (!targetMs) return 'NOW';
@@ -555,14 +555,14 @@ function getCountdownText(rideTime, rideDate, timezone) {
   if (diff < -RIDE_URGENT_PAST_MINUTES) return 'OVERDUE';
   return formatRemainingRideTime(diff);
 }
- 
+
 function getUrgencyState(diffMins) {
   if (diffMins <= 0 && diffMins >= -RIDE_URGENT_PAST_MINUTES) return 'URGENT';
   if (diffMins > 0 && diffMins <= RIDE_URGENT_FUTURE_MINUTES) return 'SOON';
   if (diffMins < -RIDE_URGENT_PAST_MINUTES) return 'OVERDUE';
   return 'NORMAL';
 }
- 
+
 function sortAndTagRides(rides, timezone) {
   const nowMs = getUserNow(timezone).getTime();
   return rides
@@ -585,27 +585,27 @@ function sortAndTagRides(rides, timezone) {
       return a.diffMins - b.diffMins;
     });
 }
- 
+
 function getDirectChatLink(jid) {
   return `https://wa.me/${normalizePhone(jid)}`;
 }
- 
+
 function parseRating(text) {
   const t = String(text || '').toLowerCase().trim();
   if (t.length > 20) return null;
- 
+
   const direct = t.match(/^([1-5])(?:\s*stars?)?$/i);
   if (direct) return Number(direct[1]);
- 
+
   return null;
 }
- 
+
 function setRatingSession(phone, data) {
   const key = normalizePhone(phone);
   if (!key) return;
   ratingSessions.set(key, { ...(data || {}), createdAt: new Date().toISOString() });
 }
- 
+
 function getRatingSession(phone, remoteJid) {
   const candidates = [
     normalizePhone(phone),
@@ -613,29 +613,29 @@ function getRatingSession(phone, remoteJid) {
     getSessionKey(phone),
     getSessionKey(remoteJid),
   ].filter(Boolean);
- 
+
   for (const key of candidates) {
     const found = ratingSessions.get(key);
     if (found) return found;
   }
- 
+
   return null;
 }
- 
+
 function clearRatingSession(phone, remoteJid, other) {
   for (const value of [phone, remoteJid, other]) {
     const key = normalizePhone(value);
     if (key) ratingSessions.delete(key);
   }
 }
- 
+
 async function addRatingToUser(phone, stars) {
   const key = normalizePhone(phone);
   if (!key) return 5;
- 
+
   try {
     const user = await User.getOrCreate(key);
- 
+
     if (!user.ratingCount || user.ratingCount < 1) {
       user.rating = stars;
       user.ratingCount = 1;
@@ -644,7 +644,7 @@ async function addRatingToUser(phone, stars) {
       user.ratingCount += 1;
       user.rating = (total + stars) / user.ratingCount;
     }
- 
+
     await user.save();
     return Number(user.rating || 5);
   } catch (err) {
@@ -652,10 +652,10 @@ async function addRatingToUser(phone, stars) {
     return 5;
   }
 }
- 
+
 async function sendGupshupMessage(toJid, text) {
   if (!toJid || !sock) return false;
- 
+
   try {
     await sock.sendMessage(jidFor(toJid), { text: String(text) });
     return true;
@@ -664,18 +664,18 @@ async function sendGupshupMessage(toJid, text) {
     return false;
   }
 }
- 
+
 function adminOnly(req, res, next) {
   const secret = process.env.ADMIN_SECRET;
   if (!secret) {
     return res.status(503).send('Admin API disabled: ADMIN_SECRET is not configured');
   }
- 
+
   const auth = req.get('authorization') || '';
   if (auth !== `Bearer ${secret}`) return res.status(401).send('Unauthorized');
   next();
 }
- 
+
 function formatExpiryCountdown(expiresAt) {
   const ms = new Date(expiresAt).getTime() - Date.now();
   if (!Number.isFinite(ms) || ms <= 0) return 'expiring now';
@@ -685,28 +685,28 @@ function formatExpiryCountdown(expiresAt) {
   const remainder = minutes % 60;
   return `expires in ${hours}h${remainder ? `${remainder}m` : ''}`;
 }
- 
+
 function isRideCurrentlyActionable(ride) {
   const status = String(ride?.status || '').toUpperCase();
   if (status !== 'OPEN') return false;
   if (ride?.expiresAt && new Date(ride.expiresAt).getTime() <= Date.now()) return false;
   return true;
 }
- 
+
 function profileName(user) {
   return String(user?.name || user?.username || 'Induu member').trim();
 }
- 
+
 function profileUsername(user) {
   const raw = String(user?.username || '').trim().replace(/^@+/, '');
   return raw ? `@${raw}` : 'Not set';
 }
- 
+
 function profileCountry(user, region) {
   const country = user?.country || region.country;
   return country === 'KE' ? '🇰🇪 Kenya' : '🇺🇸 USA';
 }
- 
+
 function buildProfileText(user, region) {
   const completed = Number(user?.ridesCompleted || 0);
   const offered = Number(user?.ridesOffered || 0);
@@ -731,7 +731,7 @@ function buildProfileText(user, region) {
     `Username changes remaining: ${Math.max(0, USERNAME_CHANGE_LIMIT - Number(user?.usernameChangeCount || 0))}`,
   ].join('\n');
 }
- 
+
 async function sendRidesList(toJid, rides, title = 'RIDES:', page = 0, timezone = DEFAULT_TIMEZONE) {
   const clean = (rides || [])
     .map((ride) => ride?.dataValues || ride)
@@ -779,24 +779,24 @@ async function sendRidesList(toJid, rides, title = 'RIDES:', page = 0, timezone 
   session.ridesPage = safePage;
   session.lastTitle = title;
 }
- 
+
 async function checkAndForwardChat(phoneJid, text, realPhone) {
   const key = normalizePhone(realPhone) || normalizePhone(phoneJid);
   const chat = activeChats.get(key);
- 
+
   if (!chat) return false;
- 
+
   try {
     const ride = await RideRequest.findByPk(chat.rideId);
- 
+
     if (!ride || ride.status !== 'TAKEN') {
       killChatFor(key);
       return false;
     }
- 
+
     const sender = normalizePhone(ride.phone) === key ? 'Rider' : 'Driver';
     const receiver = sender === 'Rider' ? 'driver' : 'rider';
- 
+
     await sendGupshupMessage(chat.with, `${sender} ${chat.rideId}: ${text}`);
     await sendGupshupMessage(phoneJid, `Sent to ${receiver}`);
     return true;
@@ -805,47 +805,51 @@ async function checkAndForwardChat(phoneJid, text, realPhone) {
     return false;
   }
 }
- 
+
 function setActiveChat(a, b, rideId) {
   const left = normalizePhone(a);
   const right = normalizePhone(b);
   if (!left || !right) return;
- 
+
   const dataA = { with: right, rideId, createdAt: new Date().toISOString() };
   const dataB = { with: left, rideId, createdAt: new Date().toISOString() };
- 
+
   activeChats.set(left, dataA);
   activeChats.set(right, dataB);
 }
- 
+
 function killChatFor(phone) {
   const key = normalizePhone(phone);
   if (!key) return;
- 
+
   const chat = activeChats.get(key);
   activeChats.delete(key);
- 
+
   if (chat?.with) activeChats.delete(normalizePhone(chat.with));
 }
- 
+
 const INDUU_SELF_KNOWLEDGE = {
   identity: 'Induu is a student-focused ride-sharing assistant. Its primary job is to help riders request rides, help drivers discover and accept rides, manage ride status, and guide users through profiles and account features. It can also answer general knowledge questions, but ride assistance is its main purpose.',
   capabilities: ['request rides in natural language','understand dates, times and passenger counts','create and track ride requests','show rides to drivers','ONLINE/OFFLINE driver availability','ride filtering and pagination','ride acceptance','profile and ride history','username and default-location updates','ride extension and cancellation','trip completion','rider/driver chat','ratings','ride-state/error explanations','general knowledge answers'],
   commands: {HELP:'Shows help.',PROFILE:'Shows the profile.',MY_RIDES:'Shows recent rides.',ONLINE:'Makes a driver available and can filter by area.',OFFLINE:'Marks a driver offline.','SHOW RIDES':'Shows actionable open rides.',TAKE:'Accepts an open ride, e.g. TAKE 123.',USERNAME:'Changes username when permitted.',LOCATION:'Changes default location.',EXTEND:'Extends an eligible open ride.', 'CANCEL RIDE':'Cancels the rider’s open request.','END RIDE':'Completes an accepted ride.',NEXT:'Next ride-list page.',BACK:'Previous ride-list page.',CLEAR:'Clears a ride-area filter.'},
   rideStates: {OPEN:'Available to eligible drivers while its request window is active.',TAKEN:'Accepted by a driver; rider and driver are connected.',COMPLETED:'Trip completed.',CANCELLED:'Cancelled by the rider.',EXPIRED:'Request window ended before acceptance.'}
 };
-function indUUHelpText(){return ['*INDUU — WHAT I CAN DO*','','I am primarily your ride assistant, but I can also answer general questions.','','*Rides*','• Need a ride: "Need a ride from Juja to Nairobi tomorrow at 8am"','• Driver mode: "I am driving Juja to Nairobi"','• See rides: SHOW RIDES','• Driver availability: ONLINE / OFFLINE','• Accept: TAKE 123, ACCEPT 123, CLAIM 123, or reply 123 when a ride is offered','','*Account*','• PROFILE — view your profile','• MY RIDES — view recent rides','• USERNAME newname — update username when permitted','• LOCATION Juja — update your default location','','*Ride management*','• EXTEND RIDE 123','• CANCEL RIDE 123','• END RIDE','','Ask me "How do I update my profile?", "Why can’t I accept a ride?", or "What does ONLINE do?" and I can explain.'].join('\n');}
+
+function indUUHelpText(){
+  return ['*INDUU — WHAT I CAN DO*','','I am primarily your ride assistant, but I can also answer general questions.','','*Rides*','• Need a ride: "Need a ride from Juja to Nairobi tomorrow at 8am"','• Driver mode: "I am driving Juja to Nairobi"','• See rides: SHOW RIDES','• Driver availability: ONLINE / OFFLINE','• Accept: TAKE 123, ACCEPT 123, CLAIM 123, or reply 123 when a ride is offered','','*Account*','• PROFILE — view your profile','• MY RIDES — view recent rides','• USERNAME newname — update username when permitted','• LOCATION Juja — update your default location','','*Ride management*','• EXTEND RIDE 123','• CANCEL RIDE 123','• END RIDE','','Ask me "How do I update my profile?", "Why can’t I accept a ride?", or "What does ONLINE do?" and I can explain.'].join('\n');
+}
+
 function isInduuSelfQuestion(text){
   const l=String(text||'').toLowerCase().trim();
   return /\b(?:who are you|what are you|what can you do|what do you do|how do you work|how does induu work|what is induu|tell me about induu|your commands|commands|help me|update .*profile|edit .*profile|change .*profile|change .*username|update .*username|change .*location|update .*location|what does online do|what does offline do|how do i accept|how can i accept|why can.?t i accept|why is .* ride .* unavailable|what do .* ride .* mean|ride status|ride states|what happens after .*accept|how do ratings work|how do i rate|how do i cancel .*ride|how do i extend .*ride|how do i end .*ride|how do i complete .*ride|why was .* ride .* expired|what happened to .* ride|where is my ride|is my ride|my ride .* status|why am i offline|am i online)\b/i.test(l);
 }
- 
+
 function extractQuestionRideId(text){
   const l=String(text||'').trim();
   const m=l.match(/(?:ride|request|trip)\s*#?\s*(\d+)\b/i) || l.match(/#(\d+)\b/);
   return m ? Number(m[1]) : null;
 }
- 
+
 function hasExpired(ride) {
   if (!ride || !ride.expiresAt) return false;
   return new Date(ride.expiresAt).getTime() <= Date.now();
@@ -857,7 +861,7 @@ function dynamicRideStateLabel(ride, now = new Date()){
   if(status==='OPEN' && hasExpired(ride)) return 'EXPIRED';
   return status || 'UNKNOWN';
 }
- 
+
 function formatDynamicRideSummary(ride, region){
   if(!ride) return 'I could not find that ride in the database.';
   const state=dynamicRideStateLabel(ride);
@@ -875,7 +879,7 @@ function formatDynamicRideSummary(ride, region){
   if(ride.cancelledAt) lines.push(`Cancelled: ${new Date(ride.cancelledAt).toLocaleString('en-US',{timeZone:region.timezone})}`);
   return lines.join('\n');
 }
- 
+
 async function getDynamicRideContext(phone, region, requestedRideId=null){
   const phoneKey=normalizePhone(phone);
   const result={requestedRide:null,latestRide:null,openRide:null,takenRide:null,counts:{},user:null};
@@ -896,26 +900,26 @@ async function getDynamicRideContext(phone, region, requestedRideId=null){
   } catch(err){ console.error('Dynamic ride context error:',err?.message||err); }
   return result;
 }
- 
+
 function appendRideRedirect(text){
   const r=String(text||'').trim();
   if(!r) return '';
-  return /assist you with a ride|ride today/i.test(r) ? r : `${r}\n\nHow can I assist you with a ride today?`;
+  return /assist you with a ride|ride today/i.test(r) ? r : `${r}\n\n`;
 }
- 
+
 function normalizeKnowledgeReply(text){
   let r=String(text||'').trim().replace(/^Induu:\s*/i,'').trim();
   if(!r)return '';
   if(r.length>1800)r=`${r.slice(0,1770).trim()}...`;
   return appendRideRedirect(r);
 }
- 
+
 async function answerSelfQuestion(text,user,region,phone){
   const l=String(text||'').toLowerCase().trim();
   if(['help','menu','?'].includes(l))return indUUHelpText();
   const rideId=extractQuestionRideId(text);
   const dynamic=await getDynamicRideContext(phone,region,rideId);
- 
+
   if(/\b(?:why can.?t i accept|why .* ride .* unavailable|accept.*ride|take.*ride)\b/i.test(l)){
     if(!rideId) return appendRideRedirect('To accept a ride, use TAKE 123, ACCEPT 123, CLAIM 123, or reply with the ride number when Induu has just offered it. If you give me the ride number, I can check its current database status and explain exactly why it can or cannot be accepted.');
     const ride=dynamic.requestedRide;
@@ -930,7 +934,7 @@ async function answerSelfQuestion(text,user,region,phone){
     if(state==='COMPLETED')return appendRideRedirect(`Ride #${rideId} is already COMPLETED, so it cannot be accepted.`);
     return appendRideRedirect(`Ride #${rideId} currently has status ${state}. That state does not allow a new driver to claim it.`);
   }
- 
+
   if(/\b(?:why was .* ride .* expired|why .* ride .* expired|what happened to .* ride|where is my ride|is my ride|my ride .* status|ride status)\b/i.test(l)){
     const ride=dynamic.requestedRide || dynamic.latestRide || dynamic.takenRide;
     if(!ride) return appendRideRedirect(`I could not find a ride associated with your account. You currently have ${dynamic.counts.requested||0} recorded ride request${(dynamic.counts.requested||0)===1?'':'s'}.`);
@@ -943,18 +947,18 @@ async function answerSelfQuestion(text,user,region,phone){
     else if(state==='COMPLETED') explanation+='\n\nThe trip has already been completed.';
     return appendRideRedirect(explanation);
   }
- 
+
   if(/\b(?:why am i offline|am i online|my online status|online status)\b/i.test(l)){
     const u=dynamic.user || user;
     const online=Boolean(u?.isOnline && u?.onlineUntil && new Date(u.onlineUntil)>new Date());
     const until=u?.onlineUntil ? new Date(u.onlineUntil).toLocaleString('en-US',{timeZone:region.timezone}) : null;
     return appendRideRedirect(online ? `You are currently ONLINE as a driver${until ? ` until ${until}`:''}.` : 'You are currently OFFLINE as a driver. Say ONLINE to become available to drivers and start seeing actionable ride requests.');
   }
- 
+
   if(/\b(?:what happened to my ride|my ride|ride)\b/i.test(l) && rideId){
     return appendRideRedirect(formatDynamicRideSummary(dynamic.requestedRide,region));
   }
- 
+
   if(/\b(?:who are you|what are you|what is induu|tell me about induu)\b/i.test(l))return appendRideRedirect(INDUU_SELF_KNOWLEDGE.identity);
   if(/\b(?:what can you do|what do you do|how do you work|your commands|commands)\b/i.test(l))return appendRideRedirect(indUUHelpText());
   if(/\b(?:profile|update .*profile|edit .*profile|change .*profile)\b/i.test(l))return appendRideRedirect(`Use PROFILE to view your current profile. It shows your name, username, country, default location, rating, ride statistics and driver status. Use USERNAME newname to change your username when permitted, and LOCATION Juja to change your default location.`);
@@ -966,16 +970,16 @@ async function answerSelfQuestion(text,user,region,phone){
   if(/\b(?:rating|rate|ratings)\b/i.test(l))return appendRideRedirect('After a completed trip, Induu can ask participants for a 1–5 star rating, which contributes to the participant’s displayed average.');
   return null;
 }
- 
+
 async function answerGeneralQuestion(question,region,loc,user=null,phone=null){
   const lower=String(question||'').toLowerCase().trim();
   const greeting=getTimeGreeting(region.timezone);
   if(!lower||lower.length<=2||/^\d+$/.test(lower))return null;
   const self=await answerSelfQuestion(question,user,region,phone);
   if(self)return self;
-  if(['thanks','thank you','thankyou','thx'].includes(lower))return "You're welcome! How can I assist you with a ride today?";
-  if(['ok','okay','cool','nice','great','alright'].includes(lower))return 'Got it! How can I assist you with a ride today?';
-  if(['hi','hey','hello','hii','heyy','yo'].includes(lower))return `${greeting}! I'm Induu — your ride-sharing assistant. I can also answer general questions. How can I assist you with a ride today?`;
+  if(['thanks','thank you','thankyou','thx'].includes(lower))return "You're welcome! ";
+  if(['ok','okay','cool','nice','great','alright'].includes(lower))return 'Got it! ';
+  if(['hi','hey','hello','hii','heyy','yo'].includes(lower))return `${greeting}! I'm Induu — your ride-sharing assistant. I can also answer general questions. `;
   if(!process.env.GROQ_API_KEY)return null;
   try{
     const dynamic=phone ? await getDynamicRideContext(phone,region,extractQuestionRideId(question)) : null;
@@ -985,14 +989,14 @@ async function answerGeneralQuestion(question,region,loc,user=null,phone=null){
       latestRide:dynamic.latestRide ? {id:dynamic.latestRide.id,status:dynamicRideStateLabel(dynamic.latestRide)} : null,
       counts:dynamic.counts,
     } : null;
-    const system=['You are Induu, a highly capable general knowledge assistant embedded inside a student ride-sharing platform.',INDUU_SELF_KNOWLEDGE.identity,`Platform capabilities: ${INDUU_SELF_KNOWLEDGE.capabilities.join('; ')}.`,`Commands: ${JSON.stringify(INDUU_SELF_KNOWLEDGE.commands)}.`,`Ride states: ${JSON.stringify(INDUU_SELF_KNOWLEDGE.rideStates)}.`,`LIVE USER/DATABASE CONTEXT (use only when relevant; never expose private phone numbers): ${JSON.stringify(dynamicState)}.`,'Answer general knowledge accurately and naturally, like a concise encyclopedia. Explain science, technology, history, geography, language, everyday subjects and educational questions when asked.','For Induu questions involving the user’s rides, online state, profile, availability, acceptance, expiration, cancellation, completion or history, prefer the supplied LIVE USER/DATABASE CONTEXT over generic explanations. If the context does not contain the requested fact, say that it could not be verified rather than inventing it.','Do not invent current events, prices, bookings, driver matches, or database state. Do not pretend to have live web access.','If the user is asking to book, change, cancel, accept, extend, or complete a ride, let the ride-command workflow handle it.','Keep ordinary knowledge answers focused, normally 2-6 short sentences. End every ordinary general-knowledge answer with exactly: How can I assist you with a ride today?','No emojis unless requested.'].join(' ');
+    const system=['You are Induu, a highly capable general knowledge assistant embedded inside a student ride-sharing platform.',INDUU_SELF_KNOWLEDGE.identity,`Platform capabilities: ${INDUU_SELF_KNOWLEDGE.capabilities.join('; ')}.`,`Commands: ${JSON.stringify(INDUU_SELF_KNOWLEDGE.commands)}.`,`Ride states: ${JSON.stringify(INDUU_SELF_KNOWLEDGE.rideStates)}.`,`LIVE USER/DATABASE CONTEXT (use only when relevant; never expose private phone numbers): ${JSON.stringify(dynamicState)}.`,'Answer general knowledge accurately and naturally, like a concise encyclopedia. Explain science, technology, history, geography, language, everyday subjects and educational questions when asked.','For Induu questions involving the user’s rides, online state, profile, availability, acceptance, expiration, cancellation, completion or history, prefer the supplied LIVE USER/DATABASE CONTEXT over generic explanations. If the context does not contain the requested fact, say that it could not be verified rather than inventing it.','Do not invent current events, prices, bookings, driver matches, or database state. Do not pretend to have live web access.','If the user is asking to book, change, cancel, accept, extend, or complete a ride, let the ride-command workflow handle it.','Keep ordinary knowledge answers focused, normally 2-6 short sentences. End every ordinary general-knowledge answer with exactly: ','No emojis unless requested.'].join(' ');
     const response=await axios.post(GROQ_URL,{model:GROQ_MODEL,messages:[{role:'system',content:system},{role:'user',content:question}],temperature:0.15,max_tokens:500},{headers:{Authorization:`Bearer ${process.env.GROQ_API_KEY}`,'Content-Type':'application/json'},timeout:15000});
     return normalizeKnowledgeReply(response.data?.choices?.[0]?.message?.content||'');
   }catch(err){console.error('General AI error:',err?.message||err);return null;}
 }
- 
+
 const SYSTEM_PROMPT = `You are Induu, an AI student ride-sharing assistant operating in {COUNTRY}. CURRENT LOCAL CONTEXT:- Local date: {TODAY_DATE}- Local time: {TODAY_INFO}- Draft: {CONTEXT_DRAFT} Return ONLY valid JSON with these keys:{  "role": "rider" | "driver" | "command" | "chat",  "command": "ONLINE" | "OFFLINE" | "SHOW_REQUESTS" | "TAKE" | "FILTER" | "CLEAR_FILTERS" | "NEXT" | "END_RIDE" | null,  "filter": string | null,  "takeId": number | null,  "from": string | null,  "to": string | null,  "date": string | null,  "time": string | null,  "seats": number | null} RULES:- Rider means the user needs/wants a ride.- Driver means the user is offering/driving a vehicle.- Preserve fields already present in the draft unless the user clearly changes them.- "need ride tomorrow" means rider + date tomorrow, even when no locations/time are supplied yet.- "tomorrow at 5pm", "tomorrow 5pm", "Friday at 9am" must preserve both date and time.- Understand today, tomorrow, day after tomorrow, this/next weekday, morning, afternoon, evening, tonight, now, ASAP.- "for 2 people", "2 passengers", "me plus 1" means seats.- A place name by itself can fill the missing location field in an active draft.- Never turn a general question into a ride request.- Never treat a rating such as "5" as a ride ID when a rating session is active.- Induu is primarily a ride-sharing assistant but can answer general knowledge questions.- Platform questions about PROFILE, USERNAME, LOCATION, ONLINE, OFFLINE, SHOW RIDES, TAKE/ACCEPT/CLAIM, MY RIDES, EXTEND, CANCEL RIDE, END RIDE, ratings, ride states, availability and chat should be classified as chat or the appropriate command, never as a new ride.- If the user asks a general knowledge question such as "what is a television", classify it as chat.- Do not invent platform capabilities or database state.`;
- 
+
 function safeJsonParse(value) {
   try {
     const text = String(value || '')
@@ -1005,23 +1009,23 @@ function safeJsonParse(value) {
     return null;
   }
 }
- 
+
 async function parseWithAI(message, region, contextDraft) {
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) return { role: 'chat' };
- 
+
   const now = getUserNow(region.timezone);
   const todayDate = getLocalDateString(new Date(), region.timezone);
   const todayInfo = `${now.toISOString()} local-wall-clock`;
- 
+
   const prompt = SYSTEM_PROMPT
     .replace('{COUNTRY}', region.country)
     .replace('{TODAY_DATE}', todayDate)
     .replace('{TODAY_INFO}', todayInfo)
     .replace('{CONTEXT_DRAFT}', JSON.stringify(contextDraft || {}));
- 
+
   const models = [GROQ_MODEL];
- 
+
   for (const model of models) {
     try {
       const response = await axios.post(
@@ -1044,10 +1048,10 @@ async function parseWithAI(message, region, contextDraft) {
           timeout: 15000,
         }
       );
- 
+
       const data = safeJsonParse(response.data?.choices?.[0]?.message?.content);
       if (!data) continue;
- 
+
       if (data.from && !isValidLocation(data.from)) data.from = null;
       if (data.to && !isValidLocation(data.to)) data.to = null;
       if (data.date) data.date = getRealDate(data.date, region.timezone);
@@ -1055,16 +1059,16 @@ async function parseWithAI(message, region, contextDraft) {
       if (data.seats != null) {
         data.seats = Math.max(1, Math.min(6, Number.parseInt(data.seats, 10) || 1));
       }
- 
+
       return data;
     } catch (err) {
       console.error(`Parser model ${model} failed:`, err?.message || err);
     }
   }
- 
+
   return { role: 'chat' };
 }
- 
+
 function parseDirectCommand(text) {
   const raw = String(text || '').trim();
   const l = raw.toLowerCase();
@@ -1098,51 +1102,51 @@ function parseDirectCommand(text) {
   }
   return null;
 }
- 
+
 function isProfileRequest(text) {
   const l = String(text || '').toLowerCase().trim();
   return ['profile', 'my profile', 'account', 'me'].includes(l);
 }
- 
+
 function isMyRidesRequest(text) {
   const l = String(text || '').toLowerCase().trim();
   return ['my rides', 'my ride', 'ride status', 'status'].includes(l);
 }
- 
+
 function isHelpRequest(text) {
   const l = String(text || '').toLowerCase().trim();
   return ['help', 'menu', '?'].includes(l);
 }
- 
+
 function isNaturalExtensionRequest(text) {
   const l = String(text || '').toLowerCase().trim();
   return /^(?:extend|keep open)(?:\s+ride)?(?:\s+#?\d+)?$/.test(l);
 }
- 
+
 function isNaturalCancellationRequest(text) {
   const l = String(text || '').toLowerCase().trim();
   return /^(?:cancel)(?:\s+ride)?(?:\s+#?\d+)?$/.test(l);
 }
- 
+
 function parseRideId(text) {
   const match = String(text || '').match(/#?(\d+)/);
   return match ? Number(match[1]) : null;
 }
- 
+
 function parseUsernameCommand(text) {
   const match = String(text || '').match(/^username\s+@?([a-zA-Z0-9_.-]{3,30})$/i);
   return match ? match[1] : null;
 }
- 
+
 function parseLocationCommand(text) {
   const match = String(text || '').match(/^location\s+(.+)$/i);
   return match ? match[1].trim() : null;
 }
- 
+
 async function sendHelp(phoneJid) {
   return sendGupshupMessage(phoneJid, indUUHelpText());
 }
- 
+
 async function showMyRides(phoneJid, phone, region) {
   const rides = await RideRequest.findAll({
     where: { [Op.or]: [{ phone }, { driverPhone: phone }] },
@@ -1162,7 +1166,7 @@ async function showMyRides(phoneJid, phone, region) {
   }
   return sendGupshupMessage(phoneJid, lines.join('\n').trim());
 }
- 
+
 async function extendRideForUser(phoneJid, phone, requestedId = null) {
   const ride = requestedId
     ? await RideRequest.findByPk(requestedId)
@@ -1173,7 +1177,7 @@ async function extendRideForUser(phoneJid, phone, requestedId = null) {
   if (!result.success) return sendGupshupMessage(phoneJid, result.message);
   return sendGupshupMessage(phoneJid, `✅ Ride ${ride.id} extended.\nThe request will remain open for another ${RIDE_REQUEST_TTL_MINUTES} minutes.`);
 }
- 
+
 async function cancelRideForUser(phoneJid, phone, requestedId = null) {
   const ride = requestedId
     ? await RideRequest.findByPk(requestedId)
@@ -1184,14 +1188,14 @@ async function cancelRideForUser(phoneJid, phone, requestedId = null) {
   if (!result.success) return sendGupshupMessage(phoneJid, result.message);
   return sendGupshupMessage(phoneJid, `Ride ${ride.id} cancelled. It is no longer available to drivers.`);
 }
- 
+
 async function changeUsername(phoneJid, phone, requestedUsername) {
   const user = await User.getOrCreate(phone);
   const result = await User.changeUsernameSafely(phone, requestedUsername, USERNAME_CHANGE_LIMIT);
   if (!result.success) return sendGupshupMessage(phoneJid, `⚠️ ${result.message}`);
   return sendGupshupMessage(phoneJid, `✅ Username updated to @${result.user.username}.\nYou have no username changes remaining.`);
 }
- 
+
 async function updateLocation(phoneJid, phone, location, region) {
   if (!isValidLocation(location)) return sendGupshupMessage(phoneJid, 'Please provide a real pickup area or city, for example: LOCATION Juja');
   const user = await User.getOrCreate(phone);
@@ -1201,7 +1205,7 @@ async function updateLocation(phoneJid, phone, location, region) {
   await user.save();
   return sendGupshupMessage(phoneJid, `✅ Default location updated to ${user.location}.`);
 }
- 
+
 async function handleDirectCommand(cmd, phoneJid, userPhoneKey, normKey, region) {
   switch (cmd.command) {
     case 'HELP':
@@ -1239,38 +1243,38 @@ async function handleDirectCommand(cmd, phoneJid, userPhoneKey, normKey, region)
       clearRatingSession(userPhoneKey, phoneJid);
       return sendGupshupMessage(phoneJid, `${getTimeGreeting(region.timezone)}! You are now OFFLINE.`);
     }
- 
+
     case 'ONLINE': {
       const user = await User.getOrCreate(userPhoneKey);
       let filter = null;
       let location = user.location || region.defaultCity;
- 
+
       if (cmd.filter && cmd.filter.length > 1) {
         filter = cmd.filter.replace(/^in\s+/i, '').trim();
         location = filter;
       }
- 
+
       await user.setOnline(location, DEFAULT_ONLINE_HOURS);
       user.filterFrom = filter;
       await user.save();
- 
+
       const rides = await RideRequest.findAll({
         where: { status: 'OPEN', expiresAt: { [Op.gt]: new Date() } },
         order: [['createdAt', 'DESC']],
       });
- 
+
       const filtered = filter
         ? rides.filter((r) =>
             !isPollutedRide(r) &&
             (areLocationsNearby(filter, r.from) || areLocationsNearby(filter, r.to))
           )
         : rides.filter((r) => !isPollutedRide(r));
- 
+
       await sendGupshupMessage(
         phoneJid,
         `ONLINE: ${filter ? filter : 'All areas'} | Rating: ${Number(user.rating || 5).toFixed(1)} ★ (${user.ratingCount || 0})`
       );
- 
+
       if (filtered.length) {
         await sendRidesList(phoneJid, filtered, 'OPEN RIDES:', 0, region.timezone);
       } else {
@@ -1283,40 +1287,40 @@ async function handleDirectCommand(cmd, phoneJid, userPhoneKey, normKey, region)
       }
       return;
     }
- 
+
     case 'CLEAR_FILTERS': {
       const user = await User.getOrCreate(userPhoneKey);
       user.filterFrom = null;
       await user.save();
- 
+
       const rides = await RideRequest.findAll({
         where: { status: 'OPEN', expiresAt: { [Op.gt]: new Date() } },
         order: [['createdAt', 'DESC']],
       });
- 
+
       return sendRidesList(phoneJid, rides, 'Filters cleared:', 0, region.timezone);
     }
- 
+
     case 'SHOW_REQUESTS': {
       const rides = await RideRequest.findAll({
         where: { status: 'OPEN', expiresAt: { [Op.gt]: new Date() } },
         order: [['createdAt', 'DESC']],
       });
- 
+
       return sendRidesList(phoneJid, rides, 'OPEN RIDES:', 0, region.timezone);
     }
- 
+
     case 'TAKE':
       return takeRide(cmd.takeId, phoneJid, normKey, region);
- 
+
     case 'END_RIDE':
       return endRideForUser(phoneJid, normKey, region);
- 
+
     default:
       return false;
   }
 }
- 
+
 async function takeRide(rideId, phoneJid, driverPhone, region) {
   if (!rideId) return false;
   const driver = await User.getOrCreate(driverPhone);
@@ -1354,22 +1358,22 @@ async function takeRide(rideId, phoneJid, driverPhone, region) {
   );
   return true;
 }
- 
+
 async function endRideForUser(phoneJid, userPhoneKey, region) {
   const normKey = normalizePhone(userPhoneKey);
   if (!normKey || endingLocks.has(normKey)) return;
- 
+
   endingLocks.add(normKey);
   setTimeout(() => endingLocks.delete(normKey), 5000);
- 
+
   try {
     let rideToRate = null;
     const active = activeChats.get(normKey);
- 
+
     if (active?.rideId) {
       rideToRate = await RideRequest.findByPk(active.rideId);
     }
- 
+
     if (!rideToRate || rideToRate.status !== 'TAKEN') {
       rideToRate = await RideRequest.findOne({
         where: {
@@ -1382,7 +1386,7 @@ async function endRideForUser(phoneJid, userPhoneKey, region) {
         order: [['updatedAt', 'DESC']],
       });
     }
- 
+
     if (!rideToRate) {
       await sendGupshupMessage(
         phoneJid,
@@ -1390,40 +1394,40 @@ async function endRideForUser(phoneJid, userPhoneKey, region) {
       );
       return;
     }
- 
+
     const [updated] = await RideRequest.update(
       { status: 'COMPLETED' },
       { where: { id: rideToRate.id, status: 'TAKEN' } }
     );
- 
+
     if (!updated) {
       await sendGupshupMessage(phoneJid, 'This trip was already completed.');
       return;
     }
- 
+
     const riderPhone = normalizePhone(rideToRate.phone);
     const driverPhone = normalizePhone(rideToRate.driverPhone);
     const otherPhone = normKey === riderPhone ? driverPhone : riderPhone;
- 
+
     killChatFor(normKey);
     clearSession(normKey);
- 
+
     if (!otherPhone) {
       await sendGupshupMessage(phoneJid, 'Trip ended. Chat closed.');
       return;
     }
- 
+
     const ratingDataForThisUser = { rideId: rideToRate.id, other: otherPhone };
     const ratingDataForOther = { rideId: rideToRate.id, other: normKey };
- 
+
     setRatingSession(normKey, ratingDataForThisUser);
     setRatingSession(otherPhone, ratingDataForOther);
- 
+
     await sendGupshupMessage(
       phoneJid,
       `Trip ${rideToRate.id} ended. Thanks for using Induu!\n\nPlease rate your ${normKey === riderPhone ? 'driver' : 'rider'}: Reply 1-5 stars (5 = Excellent)`
     );
- 
+
     if (otherPhone !== normKey) {
       await sendGupshupMessage(
         otherPhone,
@@ -1434,29 +1438,29 @@ async function endRideForUser(phoneJid, userPhoneKey, region) {
     endingLocks.delete(normKey);
   }
 }
- 
+
 function classifyLocalIntent(text) {
   const l = String(text || '').toLowerCase().trim();
- 
+
   if (/\b(?:need|want|looking for|find me)\b.*\b(?:ride|lift|cab|transport)\b/.test(l)) {
     return 'rider';
   }
- 
+
   if (/\b(?:give|offer|offering|driving|drive|have)\b.*\b(?:ride|seat|seats|car|vehicle)\b/.test(l)) {
     return 'driver';
   }
- 
+
   if (/\bfrom\b.+\bto\b/.test(l) && !/\b(?:give|offer|driving)\b/.test(l)) {
     return 'rider';
   }
- 
+
   return null;
 }
- 
+
 async function handleRideLogic(phoneJid, text, realPhone) {
   const rawText = String(text || '').trim();
   if (!rawText) return;
- 
+
   const normKey = canonicalPhone(realPhone, phoneJid);
   const region = detectUserRegion(normKey);
   const session = getSession(normKey);
@@ -1467,29 +1471,29 @@ async function handleRideLogic(phoneJid, text, realPhone) {
   if (!profileUser.location) { profileUser.location = region.defaultCity; profileDirty = true; }
   profileUser.lastSeenAt = new Date();
   if (profileDirty || profileUser.changed()) await profileUser.save();
- 
+
   const ratingSession = getRatingSession(normKey, phoneJid);
- 
+
   if (ratingSession) {
     const rating = parseRating(rawText);
- 
+
     if (rating) {
       const newAverage = await addRatingToUser(ratingSession.other, rating);
       clearRatingSession(normKey, phoneJid, ratingSession.other);
- 
+
       await sendGupshupMessage(
         phoneJid,
         `Rating saved! You rated ${rating} ★ for trip ${ratingSession.rideId}. New average for them: ${newAverage.toFixed(1)} ★\n\nNeed another? Say: Need a ride`
       );
       return;
     }
- 
+
     if (/^(skip|no|no thanks)$/i.test(rawText)) {
       clearRatingSession(normKey, phoneJid, ratingSession.other);
       await sendGupshupMessage(phoneJid, 'Skipped rating. Need another? Say: Need a ride');
       return;
     }
- 
+
     if (
       /\b(?:need|want|looking for)\b.*\b(?:ride|lift|cab)\b/i.test(rawText) ||
       /\bfrom\b.+\bto\b/i.test(rawText)
@@ -1500,17 +1504,17 @@ async function handleRideLogic(phoneJid, text, realPhone) {
       return;
     }
   }
- 
+
   if (activeChats.has(normKey)) {
     const lower = rawText.toLowerCase();
     const control = /^(end ride|end trip|complete|complete trip|done|finish|online|offline|need a ride|need ride)$/i.test(lower);
     const selfQuestion = isInduuSelfQuestion(rawText);
- 
+
     if (!control && !selfQuestion && await checkAndForwardChat(phoneJid, rawText, normKey)) {
       return;
     }
   }
- 
+
   if (isProfileRequest(rawText)) {
     const user = await User.getOrCreate(normKey);
     await sendGupshupMessage(phoneJid, buildProfileText(user, region));
@@ -1571,10 +1575,10 @@ async function handleRideLogic(phoneJid, text, realPhone) {
       return;
     }
   }
- 
+
   const deterministic = extractDeterministicFields(rawText, region.timezone);
   const localIntent = classifyLocalIntent(rawText);
- 
+
   if (session.draft?.role === 'rider') {
     const draft = session.draft;
     const updated = mergeDraft(draft, {
@@ -1582,14 +1586,14 @@ async function handleRideLogic(phoneJid, text, realPhone) {
       time: deterministic.time || draft.time || null,
       seats: deterministic.seats || draft.seats || null,
     });
- 
+
     if (!updated.from && isValidLocation(rawText) && !deterministic.date && !deterministic.time) {
       updated.from = rawText;
       session.draft = updated;
       await sendGupshupMessage(phoneJid, `Got it, from ${rawText} — where to? Example: ${region.exampleDest}`);
       return;
     }
- 
+
     if (updated.from && !updated.to && isValidLocation(rawText) && !deterministic.date && !deterministic.time) {
       if (normalizeLocation(rawText) !== normalizeLocation(updated.from)) {
         updated.to = rawText;
@@ -1600,13 +1604,13 @@ async function handleRideLogic(phoneJid, text, realPhone) {
         }
       }
     }
- 
+
     session.draft = updated;
   }
- 
+
   let ai = await parseWithAI(rawText, region, session.draft || {});
   const aiRole = ai?.role || localIntent || 'chat';
- 
+
   ai = {
     ...ai,
     date: deterministic.date || ai?.date || session.draft?.date || null,
@@ -1614,9 +1618,9 @@ async function handleRideLogic(phoneJid, text, realPhone) {
     seats: deterministic.seats || ai?.seats || session.draft?.seats || null,
     role: aiRole,
   };
- 
+
   if (ai.role === 'chat' && localIntent) ai.role = localIntent;
- 
+
   if (ai.role === 'chat') {
     const reply = await answerGeneralQuestion(
       rawText,
@@ -1625,99 +1629,99 @@ async function handleRideLogic(phoneJid, text, realPhone) {
       profileUser,
       normKey
     );
- 
+
     await sendGupshupMessage(
       phoneJid,
       reply || "Hello! I'm Induu — matching riders and drivers in seconds. Just text me your trip."
     );
     return;
   }
- 
+
   if (ai.role === 'driver') {
     let draft = session.draft?.role === 'driver' ? session.draft : { role: 'driver' };
- 
+
     let from = ai.from || draft.from || null;
     let to = ai.to || draft.to || null;
- 
+
     if (!from && isValidLocation(rawText) && !isCommandPhrase(rawText)) {
       from = rawText;
     }
- 
+
     if (!from) {
       session.draft = mergeDraft(draft, { role: 'driver' });
       await sendGupshupMessage(phoneJid, `Where are you driving from? Example: ${region.examplePlaces}`);
       return;
     }
- 
+
     if (!to && draft.from && isValidLocation(rawText) && normalizeLocation(rawText) !== normalizeLocation(draft.from)) {
       to = rawText;
     }
- 
+
     if (!to) {
       session.draft = mergeDraft(draft, { role: 'driver', from });
       await sendGupshupMessage(phoneJid, `Got it, driving from ${from} — where to? Example: ${region.exampleDest}`);
       return;
     }
- 
+
     if (normalizeLocation(from) === normalizeLocation(to)) {
       session.draft = mergeDraft(draft, { role: 'driver', from, to: null });
       await sendGupshupMessage(phoneJid, `From and to can't be the same (${from}). Where are you driving to?`);
       return;
     }
- 
+
     const user = await User.getOrCreate(normKey);
     await user.setOnline(from, DEFAULT_ONLINE_HOURS);
     user.filterFrom = from;
     await user.save();
- 
+
     const rides = await RideRequest.findAll({
       where: { status: 'OPEN', expiresAt: { [Op.gt]: new Date() } },
       order: [['createdAt', 'DESC']],
     });
- 
+
     const matched = rides.filter((r) =>
       !isPollutedRide(r) &&
       (areLocationsNearby(from, r.from) || areLocationsNearby(to, r.to))
     );
- 
+
     await sendGupshupMessage(
       phoneJid,
       matched.length
         ? `You're online: ${from} → ${to} • ${matched.length} matching ride${matched.length === 1 ? '' : 's'}`
         : `You're online: ${from} → ${to} • No matching rides right now.`
     );
- 
+
     if (matched.length) {
       await sendRidesList(phoneJid, matched, 'MATCHING RIDES:', 0, region.timezone);
     }
- 
+
     clearSession(normKey);
     return;
   }
- 
+
   if (ai.role === 'rider') {
     const draft = session.draft?.role === 'rider' ? session.draft : { role: 'rider' };
- 
+
     let from = ai.from || draft.from || null;
     let to = ai.to || draft.to || null;
     let date = ai.date || draft.date || getRealDate('today', region.timezone);
     let time = ai.time || draft.time || null;
     let seats = ai.seats || draft.seats || null;
- 
+
     if (/^(need|want)\s+(?:a\s+)?ride(?:\s+tomorrow)?$/i.test(rawText)) {
       session.draft = mergeDraft(draft, {
         role: 'rider',
         date: deterministic.date || date,
         seats,
       });
- 
+
       await sendGupshupMessage(
         phoneJid,
         `Sure — I've noted ${toDisplayDate(session.draft.date, region.timezone)}. Where are you riding from? Example: ${region.examplePlaces}`
       );
       return;
     }
- 
+
     if (!from) {
       if (
         isValidLocation(rawText) &&
@@ -1733,7 +1737,7 @@ async function handleRideLogic(phoneJid, text, realPhone) {
           time,
           seats,
         });
- 
+
         await sendGupshupMessage(
           phoneJid,
           `Where are you riding from? Example: ${region.examplePlaces}`
@@ -1741,7 +1745,7 @@ async function handleRideLogic(phoneJid, text, realPhone) {
         return;
       }
     }
- 
+
     if (!to) {
       if (
         isValidLocation(rawText) &&
@@ -1753,7 +1757,7 @@ async function handleRideLogic(phoneJid, text, realPhone) {
         to = rawText;
       } else {
         session.draft = mergeDraft(draft, { role: 'rider', from, date, time, seats });
- 
+
         await sendGupshupMessage(
           phoneJid,
           `Got it, from ${from} — where to? Example: ${region.exampleDest}`
@@ -1761,7 +1765,7 @@ async function handleRideLogic(phoneJid, text, realPhone) {
         return;
       }
     }
- 
+
     if (normalizeLocation(from) === normalizeLocation(to)) {
       session.draft = mergeDraft(draft, { role: 'rider', from, to: null, date, time, seats });
       await sendGupshupMessage(
@@ -1770,7 +1774,7 @@ async function handleRideLogic(phoneJid, text, realPhone) {
       );
       return;
     }
- 
+
     if (!time) {
       session.draft = mergeDraft(draft, { role: 'rider', from, to, date, seats });
       await sendGupshupMessage(
@@ -1779,7 +1783,7 @@ async function handleRideLogic(phoneJid, text, realPhone) {
       );
       return;
     }
- 
+
     const rideRequest = await RideRequest.createCustom(normKey, {
       from,
       to,
@@ -1793,39 +1797,39 @@ async function handleRideLogic(phoneJid, text, realPhone) {
     riderUser.timezone = region.timezone;
     riderUser.ridesRequested = Number(riderUser.ridesRequested || 0) + 1;
     await riderUser.save();
- 
+
     await sendGupshupMessage(
       phoneJid,
-      `RIDE ${rideRequest.id} CREATED\n${rideRequest.from} → ${rideRequest.to}\n${toDisplayDate(rideRequest.date, region.timezone)} at ${toDisplayTime(rideRequest.time)}${rideRequest.seats ? ` • ${rideRequest.seats} ${rideRequest.seats === 1 ? 'person' : 'people'}` : ''}\nAlerting nearby drivers...`
+      `RIDE ${rideRequest.id} CREATED\n${rideRequest.from} → ${rideRequest.to}\n${toDisplayDate(rideRequest.date, region.timezone)} at ${toDisplayTime(rideRequest.time)}${rideRequest.seats ? ` • ${rideRequest.seats}${rideRequest.seats === 1 ? 'person' : 'people'}` : ''}\nAlerting nearby drivers...`
     );
- 
+
     const drivers = await User.findAll({
       where: {
         isOnline: true,
         onlineUntil: { [Op.gt]: new Date() },
       },
     });
- 
+
     for (const driver of drivers) {
       if (normalizePhone(driver.phone) === normKey) continue;
- 
+
       const matches =
         !driver.location ||
         areLocationsNearby(driver.location, rideRequest.from) ||
         areLocationsNearby(driver.location, rideRequest.to);
- 
+
       if (!matches) continue;
- 
+
       await sendGupshupMessage(
         driver.phone,
-        `NEW RIDE MATCH: ${rideRequest.id}\n${rideRequest.from} → ${rideRequest.to}\n${toDisplayDate(rideRequest.date, region.timezone)} at ${toDisplayTime(rideRequest.time)}${rideRequest.seats ? ` • ${rideRequest.seats} ${rideRequest.seats === 1 ? 'person' : 'people'}` : ''}\nReply ${rideRequest.id} to take`
+        `NEW RIDE MATCH: ${rideRequest.id}\n${rideRequest.from} → ${rideRequest.to}\n${toDisplayDate(rideRequest.date, region.timezone)} at ${toDisplayTime(rideRequest.time)}${rideRequest.seats ? ` • ${rideRequest.seats}${rideRequest.seats === 1 ? 'person' : 'people'}` : ''}\nReply ${rideRequest.id} to take`
       );
     }
- 
+
     clearSession(normKey);
     return;
   }
- 
+
   if (ai.role === 'command' || ai.command) {
     await handleDirectCommand(
       { command: ai.command, filter: ai.filter, takeId: ai.takeId },
@@ -1836,14 +1840,14 @@ async function handleRideLogic(phoneJid, text, realPhone) {
     );
     return;
   }
- 
+
   const reply = await answerGeneralQuestion(rawText, region, session.draft?.from, profileUser, normKey);
   await sendGupshupMessage(
     phoneJid,
     reply || "Hello! I'm Induu — matching riders and drivers in seconds. Just text me your trip."
   );
 }
- 
+
 const INDUU_QA = {
   passed: 0,
   failed: 0,
@@ -1852,7 +1856,7 @@ const INDUU_QA = {
   startedAt: null,
   finishedAt: null,
 };
- 
+
 function qaReset() {
   INDUU_QA.passed = 0;
   INDUU_QA.failed = 0;
@@ -1861,40 +1865,40 @@ function qaReset() {
   INDUU_QA.startedAt = new Date().toISOString();
   INDUU_QA.finishedAt = null;
 }
- 
+
 function qaPass(name) {
   INDUU_QA.passed += 1;
   return { ok: true, name };
 }
- 
+
 function qaFail(name, details) {
   INDUU_QA.failed += 1;
   const failure = { name, details: String(details || 'unknown failure') };
   INDUU_QA.failures.push(failure);
   return { ok: false, ...failure };
 }
- 
+
 function qaWarn(name, details) {
   INDUU_QA.warnings += 1;
   return { ok: true, warning: true, name, details: String(details || '') };
 }
- 
+
 function qaAssert(name, condition, details = '') {
   return condition ? qaPass(name) : qaFail(name, details);
 }
- 
+
 function qaEqual(name, actual, expected) {
   const same = Object.is(actual, expected);
   return same
     ? qaPass(name)
     : qaFail(name, `expected ${JSON.stringify(expected)}, received ${JSON.stringify(actual)}`);
 }
- 
+
 function qaMatches(name, value, pattern) {
   const ok = pattern.test(String(value));
   return ok ? qaPass(name) : qaFail(name, `value ${JSON.stringify(value)} did not match ${pattern}`);
 }
- 
+
 function qaThrows(name, fn) {
   try {
     fn();
@@ -1903,7 +1907,7 @@ function qaThrows(name, fn) {
     return qaPass(name);
   }
 }
- 
+
 function qaRecord(name, fn) {
   try {
     return fn();
@@ -1911,7 +1915,7 @@ function qaRecord(name, fn) {
     return qaFail(name, error?.message || error);
   }
 }
- 
+
 function qaTestPhoneNormalization() {
   const cases = [
     ['254712345678', '254712345678'],
@@ -1926,7 +1930,7 @@ function qaTestPhoneNormalization() {
     qaEqual(`phone normalization: ${JSON.stringify(input)}`, normalizePhone(input), expected);
   }
 }
- 
+
 function qaTestCommandParsing() {
   const cases = [
     ['ONLINE', 'ONLINE'],
@@ -1953,20 +1957,20 @@ function qaTestCommandParsing() {
     qaEqual(`command parsing: ${input}`, parsed?.command, expected);
   }
 }
- 
+
 function qaTestSelfKnowledge() {
   qaAssert('self knowledge function is async', answerSelfQuestion('who are you', {}, detectUserRegion('254712345678'), '254712345678') instanceof Promise);
   qaAssert('dynamic ride context function exists', typeof getDynamicRideContext === 'function');
   qaAssert('ride id extraction works', extractQuestionRideId('Why is ride #123 unavailable?') === 123);
   qaAssert('ride state formatter exists', typeof dynamicRideStateLabel === 'function');
 }
- 
+
 function qaTestBareRideCommandSafety() {
   qaEqual('bare number becomes contextual command', parseDirectCommand('123')?.command, 'TAKE_CONTEXTUAL');
   qaEqual('bare hash number becomes contextual command', parseDirectCommand('#123')?.takeId, 123);
   qaEqual('explicit take remains TAKE', parseDirectCommand('TAKE 123')?.command, 'TAKE');
 }
- 
+
 function qaTestDateAndTime() {
   const tz = 'Africa/Nairobi';
   const today = getLocalDateString(new Date(), tz);
@@ -1979,7 +1983,7 @@ function qaTestDateAndTime() {
   qaAssert('day-after-tomorrow is after tomorrow', dayAfter > tomorrow, `${dayAfter} <= ${tomorrow}`);
   qaEqual('explicit ISO date remains stable', getRealDate('2030-05-20', tz), '2030-05-20');
 }
- 
+
 function qaTestRideTimeFormatting() {
   qaEqual('zero minutes is NOW', formatRemainingRideTime(0), 'NOW');
   qaEqual('negative minutes is NOW', formatRemainingRideTime(-10), 'NOW');
@@ -1989,7 +1993,7 @@ function qaTestRideTimeFormatting() {
   qaEqual('one hour fifteen', formatRemainingRideTime(75), '1 hr 15 min');
   qaEqual('two hours', formatRemainingRideTime(120), '2 hr');
 }
- 
+
 function qaTestRideUrgency() {
   qaEqual('urgent at now', getUrgencyState(0), 'URGENT');
   qaEqual('urgent five minutes late', getUrgencyState(-5), 'URGENT');
@@ -1999,7 +2003,7 @@ function qaTestRideUrgency() {
   qaEqual('soon sixty minutes ahead', getUrgencyState(60), 'SOON');
   qaEqual('normal beyond sixty minutes', getUrgencyState(61), 'NORMAL');
 }
- 
+
 function qaTestLocationRules() {
   const longFrom = 'JKUAT Main Gate, Juja, Kiambu County, Kenya';
   const longTo = 'Kenyatta National Hospital, Hospital Road, Nairobi, Kenya';
@@ -2009,14 +2013,14 @@ function qaTestLocationRules() {
   qaAssert('command phrase rejected as location', isCommandPhrase('ONLINE'));
   qaAssert('normal location not command', !isCommandPhrase(longFrom));
 }
- 
+
 function qaTestDistanceRules() {
   const ride = { distanceMiles: 20 };
   qaEqual('integer distance', Number(ride.distanceMiles), 20);
   qaEqual('display distance singular form', `${Math.round(ride.distanceMiles)} miles`, '20 miles');
   qaEqual('no invented distance', undefined, undefined);
 }
- 
+
 function qaTestPaginationMath() {
   const total = 41;
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -2026,7 +2030,7 @@ function qaTestPaginationMath() {
   qaEqual('last page index', Math.min(Math.max(0, 2), pages - 1), 2);
   qaEqual('back clamps at first', Math.max(0, 0 - 1), 0);
 }
- 
+
 function qaTestRegionRules() {
   const kenya = detectUserRegion('254712345678');
   const usa = detectUserRegion('19405550100');
@@ -2036,7 +2040,7 @@ function qaTestRegionRules() {
   qaAssert('USA timezone is configured', Boolean(usa.timezone));
   qaAssert('city is not inferred from phone', kenya.defaultCity === 'Kenya');
 }
- 
+
 function qaTestProfileFormatting() {
   const profile = buildProfileText({
     name: 'Test Rider',
@@ -2058,7 +2062,7 @@ function qaTestProfileFormatting() {
   qaAssert('profile contains rating', profile.includes('4.8'));
   qaAssert('profile contains country', profile.includes('Kenya'));
 }
- 
+
 function qaTestDraftMerging() {
   const first = mergeDraft({}, { role: 'rider', from: 'Juja' });
   const second = mergeDraft(first, { to: 'Nairobi', date: '2030-05-20' });
@@ -2067,7 +2071,7 @@ function qaTestDraftMerging() {
   qaEqual('draft destination merged', second.to, 'Nairobi');
   qaEqual('draft date merged', second.date, '2030-05-20');
 }
- 
+
 function qaTestRatingParsing() {
   qaEqual('rating one', parseRating('1'), 1);
   qaEqual('rating five', parseRating('5'), 5);
@@ -2075,13 +2079,13 @@ function qaTestRatingParsing() {
   qaEqual('rating six rejected', parseRating('6'), null);
   qaEqual('rating text rejected', parseRating('great'), null);
 }
- 
+
 function qaTestActionability() {
   qaAssert('open future ride actionable', isRideCurrentlyActionable({ status: 'OPEN', expiresAt: new Date(Date.now() + 60000) }));
   qaAssert('expired open ride not actionable', !isRideCurrentlyActionable({ status: 'OPEN', expiresAt: new Date(Date.now() - 60000) }));
   qaAssert('taken ride not actionable', !isRideCurrentlyActionable({ status: 'TAKEN', expiresAt: new Date(Date.now() + 60000) }));
 }
- 
+
 function qaTestScheduledTimestamp() {
   const target = zonedDateTimeToUtc('2030-05-20', '17:30', 'Africa/Nairobi');
   qaAssert('scheduled timestamp is numeric', Number.isFinite(target));
@@ -2089,7 +2093,7 @@ function qaTestScheduledTimestamp() {
   qaEqual('invalid date produces null', zonedDateTimeToUtc('bad-date', '17:30', 'Africa/Nairobi'), null);
   qaEqual('invalid time produces null', zonedDateTimeToUtc('2030-05-20', '25:99', 'Africa/Nairobi'), null);
 }
- 
+
 function qaTestSafetyFormatting() {
   const text = '  hello   world  ';
   qaEqual('session key normalization', getSessionKey('254 712 345 678'), '254712345678');
@@ -2098,7 +2102,7 @@ function qaTestSafetyFormatting() {
   qaAssert('expiry formatter is readable', formatExpiryCountdown(new Date(Date.now() + 120000)).includes('expires in'));
   qaAssert('whitespace remains harmless', text.trim().includes('hello'));
 }
- 
+
 function qaTestSortAndTag() {
   const now = new Date();
   const tz = 'Africa/Nairobi';
@@ -2112,7 +2116,7 @@ function qaTestSortAndTag() {
   qaAssert('sort adds urgency', tagged.every((ride) => typeof ride.urgency === 'string'));
   qaAssert('sort adds countdown', tagged.every((ride) => typeof ride.countdownStr === 'string'));
 }
- 
+
 function qaTestEnvironmentContracts() {
   qaEqual('Groq model is locked', GROQ_MODEL, 'openai/gpt-oss-20b');
   qaEqual('Groq endpoint is OpenAI-compatible', GROQ_URL, '[https://api.groq.com/openai/v1/chat/completions](https://api.groq.com/openai/v1/chat/completions)');
@@ -2121,7 +2125,7 @@ function qaTestEnvironmentContracts() {
   qaEqual('maximum seats', MAX_SEATS, 6);
   qaEqual('maximum bags', MAX_BAGS, 10);
 }
- 
+
 function qaTestNaturalLanguageDateSignals() {
   const tz = 'Africa/Nairobi';
   const examples = [
@@ -2137,7 +2141,7 @@ function qaTestNaturalLanguageDateSignals() {
     qaMatches(`natural date: ${example}`, value, /^\d{4}-\d{2}-\d{2}$/);
   }
 }
- 
+
 function qaTestCommandIdPriority() {
   const rating = parseRating('5');
   const command = parseDirectCommand('TAKE 5');
@@ -2145,7 +2149,7 @@ function qaTestCommandIdPriority() {
   qaEqual('TAKE 5 remains ride command', command?.command, 'TAKE');
   qaEqual('TAKE 5 id remains 5', command?.takeId, 5);
 }
- 
+
 function qaTestRideCardContract() {
   const ride = {
     id: 142,
@@ -2166,7 +2170,7 @@ function qaTestRideCardContract() {
   qaEqual('distance retained', sorted[0].distanceMiles, 20);
   qaEqual('seats retained', sorted[0].seats, 2);
 }
- 
+
 function qaTestSessionLifecycle() {
   const key = `qa-${Date.now()}-${Math.random()}`;
   const session = getSession(key);
@@ -2176,7 +2180,7 @@ function qaTestSessionLifecycle() {
   clearSession(key);
   qaAssert('session cleared', !userSessions.has(key));
 }
- 
+
 function qaTestInputBoundaries() {
   qaEqual('empty rating rejected', parseRating(''), null);
   qaEqual('long rating rejected', parseRating('1'.repeat(30)), null);
@@ -2184,7 +2188,7 @@ function qaTestInputBoundaries() {
   qaAssert('null phone normalized', normalizePhone(null) === '');
   qaAssert('invalid location can be rejected', !isValidLocation('ONLINE'));
 }
- 
+
 function qaTestTimeZoneRoundTrip() {
   const cases = [
     ['2030-01-15', '08:00', 'Africa/Nairobi'],
@@ -2196,7 +2200,7 @@ function qaTestTimeZoneRoundTrip() {
     qaAssert(`timezone conversion numeric ${date} ${time} ${tz}`, Number.isFinite(utc));
   }
 }
- 
+
 function qaTestRideStatusVocabulary() {
   const allowed = ['OPEN', 'TAKEN', 'COMPLETED', 'CANCELLED', 'EXPIRED'];
   for (const value of allowed) qaAssert(`status allowed: ${value}`, allowed.includes(value));
@@ -2206,7 +2210,7 @@ function qaTestRideStatusVocabulary() {
   qaAssert('status vocabulary has cancelled', allowed.includes('CANCELLED'));
   qaAssert('status vocabulary has expired', allowed.includes('EXPIRED'));
 }
- 
+
 function qaTestMessageSafety() {
   const samples = [
     'Need a ride from Juja to Nairobi tomorrow',
@@ -2221,19 +2225,19 @@ function qaTestMessageSafety() {
     qaAssert(`message has bounded size: ${sample}`, sample.length < 1000);
   }
 }
- 
+
 function qaTestRatingDisplay() {
   qaEqual('new rider rating label', Number(0), 0);
   qaEqual('rated user display value', Number(4.8).toFixed(1), '4.8');
   qaEqual('rating count display', Number(27), 27);
 }
- 
+
 function qaTestSeatDisplay() {
   qaEqual('one seat singular', `1 ${1 === 1 ? 'person' : 'people'}`, '1 person');
   qaEqual('two seats plural', `2 ${2 === 1 ? 'person' : 'people'}`, '2 people');
   qaEqual('six seats plural', `6 ${6 === 1 ? 'person' : 'people'}`, '6 people');
 }
- 
+
 function qaTestDistanceDisplay() {
   const values = [1, 5, 20, 20.5, 100];
   for (const value of values) {
@@ -2242,7 +2246,7 @@ function qaTestDistanceDisplay() {
     qaAssert(`distance never uses mi: ${value}`, !display.endsWith('mi'));
   }
 }
- 
+
 function qaTestPaginationBoundaries() {
   const totals = [0, 1, 19, 20, 21, 40, 41, 100, 101];
   for (const total of totals) {
@@ -2251,7 +2255,7 @@ function qaTestPaginationBoundaries() {
     qaAssert(`pagination last index valid for ${total}`, pages - 1 >= 0);
   }
 }
- 
+
 function qaTestUserRegionBoundaries() {
   const numbers = ['254700000000', '254799999999', '14155551234', '12025550123', ''];
   for (const number of numbers) {
@@ -2260,7 +2264,7 @@ function qaTestUserRegionBoundaries() {
     qaAssert(`region timezone returned for ${number || 'empty'}`, Boolean(region && region.timezone));
   }
 }
- 
+
 function qaTestCommandAliases() {
   const aliases = [
     ['more', 'NEXT'], ['next page', 'NEXT'], ['previous', 'BACK'],
@@ -2269,7 +2273,7 @@ function qaTestCommandAliases() {
   ];
   for (const [input, expected] of aliases) qaEqual(`alias ${input}`, parseDirectCommand(input)?.command, expected);
 }
- 
+
 function qaTestExpiryRules() {
   const future = { status: 'OPEN', expiresAt: new Date(Date.now() + 30 * 60000) };
   const past = { status: 'OPEN', expiresAt: new Date(Date.now() - 1) };
@@ -2283,200 +2287,4 @@ function runAllQATests() {
   qaRecord('Phone Normalization', qaTestPhoneNormalization);
   qaRecord('Command Parsing', qaTestCommandParsing);
   qaRecord('Self Knowledge', qaTestSelfKnowledge);
-  qaRecord('Bare Ride Command Safety', qaTestBareRideCommandSafety);
-  qaRecord('Date and Time', qaTestDateAndTime);
-  qaRecord('Ride Time Formatting', qaTestRideTimeFormatting);
-  qaRecord('Ride Urgency', qaTestRideUrgency);
-  qaRecord('Location Rules', qaTestLocationRules);
-  qaRecord('Distance Rules', qaTestDistanceRules);
-  qaRecord('Pagination Math', qaTestPaginationMath);
-  qaRecord('Region Rules', qaTestRegionRules);
-  qaRecord('Profile Formatting', qaTestProfileFormatting);
-  qaRecord('Draft Merging', qaTestDraftMerging);
-  qaRecord('Rating Parsing', qaTestRatingParsing);
-  qaRecord('Actionability', qaTestActionability);
-  qaRecord('Scheduled Timestamp', qaTestScheduledTimestamp);
-  qaRecord('Safety Formatting', qaTestSafetyFormatting);
-  qaRecord('Sort and Tag', qaTestSortAndTag);
-  qaRecord('Environment Contracts', qaTestEnvironmentContracts);
-  qaRecord('Natural Language Date Signals', qaTestNaturalLanguageDateSignals);
-  qaRecord('Command ID Priority', qaTestCommandIdPriority);
-  qaRecord('Ride Card Contract', qaTestRideCardContract);
-  qaRecord('Session Lifecycle', qaTestSessionLifecycle);
-  qaRecord('Input Boundaries', qaTestInputBoundaries);
-  qaRecord('Time Zone Round Trip', qaTestTimeZoneRoundTrip);
-  qaRecord('Ride Status Vocabulary', qaTestRideStatusVocabulary);
-  qaRecord('Message Safety', qaTestMessageSafety);
-  qaRecord('Rating Display', qaTestRatingDisplay);
-  qaRecord('Seat Display', qaTestSeatDisplay);
-  qaRecord('Distance Display', qaTestDistanceDisplay);
-  qaRecord('Pagination Boundaries', qaTestPaginationBoundaries);
-  qaRecord('User Region Boundaries', qaTestUserRegionBoundaries);
-  qaRecord('Command Aliases', qaTestCommandAliases);
-  qaRecord('Expiry Rules', qaTestExpiryRules);
-  INDUU_QA.finishedAt = new Date().toISOString();
-  return INDUU_QA;
 }
-
-async function startWhatsApp() {
-  if (startingWhatsApp) return;
-  startingWhatsApp = true;
-
-  try {
-    const { state, saveCreds } = await useMultiFileAuthState(AUTH_PATH);
-    const { version } = await fetchLatestBaileysVersion();
-
-    sock = makeWASocket({
-      version,
-      auth: state,
-      printQRInTerminal: true,
-      logger: pino({ level: 'silent' }),
-    });
-
-    sock.ev.on('creds.update', saveCreds);
-
-    sock.ev.on('connection.update', (update) => {
-      const { connection, lastDisconnect, qr } = update;
-
-      if (qr) qrLast = qr;
-
-      if (connection === 'close') {
-        const statusCode = lastDisconnect?.error?.output?.statusCode;
-        const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-        console.log(`Connection closed. StatusCode: ${statusCode}. Reconnecting: ${shouldReconnect}`);
-
-        if (shouldReconnect) {
-          reconnectTimer = setTimeout(() => {
-            startingWhatsApp = false;
-            startWhatsApp();
-          }, 5000);
-        } else {
-          console.log('Logged out. Please delete auth_info and restart to scan new QR code.');
-          startingWhatsApp = false;
-        }
-      } else if (connection === 'open') {
-        console.log('WhatsApp connection open and ready.');
-        qrLast = null;
-        startingWhatsApp = false;
-      }
-    });
-
-    sock.ev.on('messages.upsert', async (m) => {
-      try {
-        if (m.type !== 'notify') return;
-
-        for (const msg of m.messages) {
-          if (!msg.message || msg.key.fromMe) continue;
-
-          const remoteJid = msg.key.remoteJid;
-          if (!remoteJid || remoteJid.endsWith('@g.us')) continue;
-
-          const text =
-            msg.message.conversation ||
-            msg.message.extendedTextMessage?.text ||
-            '';
-
-          if (!text.trim()) continue;
-
-          const phone = canonicalPhone(msg.key.participant || remoteJid, remoteJid);
-
-          queueUserMessage(phone, async () => {
-            await handleRideLogic(remoteJid, text, phone);
-          });
-        }
-      } catch (err) {
-        console.error('Messages upsert error:', err?.stack || err?.message || err);
-      }
-    });
-  } catch (err) {
-    console.error('WhatsApp startup error:', err?.stack || err?.message || err);
-    startingWhatsApp = false;
-  }
-}
-
-async function startMaintenanceLoop() {
-  setInterval(async () => {
-    try {
-      await RideRequest.update(
-        { status: 'EXPIRED' },
-        { where: { status: 'OPEN', expiresAt: { [Op.lte]: new Date() } } }
-      );
-
-      await User.update(
-        { isOnline: false },
-        { where: { isOnline: true, onlineUntil: { [Op.lte]: new Date() } } }
-      );
-
-      const now = Date.now();
-      for (const [key, session] of userSessions.entries()) {
-        if (now - session.updatedAt > SESSION_TTL_MS) {
-          userSessions.delete(key);
-        }
-      }
-    } catch (err) {
-      console.error('Maintenance task error:', err?.message || err);
-    }
-  }, MAINTENANCE_INTERVAL_MS);
-}
-
-app.get('/', (req, res) => {
-  res.send('Induu WhatsApp Ride-Sharing Service is Running');
-});
-
-app.get('/qr', (req, res) => {
-  if (!qrLast) {
-    return res.send('No QR code available. Connection may be active or initializing.');
-  }
-  res.send(`
-    <html>
-      <head><title>Induu WhatsApp QR</title></head>
-      <body style="display:flex;justify-content:center;align-items:center;height:100vh;font-family:sans-serif;">
-        <div style="text-align:center;">
-          <h2>Scan QR Code with WhatsApp</h2>
-          <img src="[https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=$](https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=$){encodeURIComponent(qrLast)}" alt="QR Code"/>
-        </div>
-      </body>
-    </html>
-  `);
-});
-
-app.get('/admin/qa', adminOnly, (req, res) => {
-  const results = runAllQATests();
-  res.json(results);
-});
-
-async function main() {
-  try {
-    await initDatabase();
-    console.log('Database initialized successfully.');
-
-    runAllQATests();
-    console.log(`Initial QA Suite Completed: ${INDUU_QA.passed} passed, ${INDUU_QA.failed} failed.`);
-
-    app.listen(PORT, () => {
-      console.log(`Server listening on port ${PORT}`);
-    });
-
-    startMaintenanceLoop();
-    startWhatsApp();
-  } catch (err) {
-    console.error('Fatal initialization error:', err?.stack || err?.message || err);
-    process.exit(1);
-  }
-}
-
-process.on('SIGINT', async () => {
-  console.log('Shutting down gracefully...');
-  if (reconnectTimer) clearTimeout(reconnectTimer);
-  await cleanupDatabase();
-  process.exit(0);
-});
-
-process.on('SIGTERM', async () => {
-  console.log('Shutting down gracefully...');
-  if (reconnectTimer) clearTimeout(reconnectTimer);
-  await cleanupDatabase();
-  process.exit(0);
-});
-
-main();
