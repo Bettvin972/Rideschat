@@ -835,7 +835,7 @@ const INDUU_SELF_KNOWLEDGE = {
   rideStates: {OPEN:'Available to eligible drivers while its request window is active.',TAKEN:'Accepted by a driver; rider and driver are connected.',COMPLETED:'Trip completed.',CANCELLED:'Cancelled by the rider.',EXPIRED:'Request window ended before acceptance.'}
 };
 function indUUHelpText(){return ['*INDUU — WHAT I CAN DO*','','I am primarily your ride assistant, but I can also answer general questions.','','*Rides*','• Need a ride: "Need a ride from Juja to Nairobi tomorrow at 8am"','• Driver mode: "I am driving Juja to Nairobi"','• See rides: SHOW RIDES','• Driver availability: ONLINE / OFFLINE','• Accept: TAKE 123, ACCEPT 123, CLAIM 123, or reply 123 when a ride is offered','','*Account*','• PROFILE — view your profile','• MY RIDES — view recent rides','• USERNAME newname — update username when permitted','• LOCATION Juja — update your default location','','*Ride management*','• EXTEND RIDE 123','• CANCEL RIDE 123','• END RIDE','','Ask me "How do I update my profile?", "Why can’t I accept a ride?", or "What does ONLINE do?" and I can explain.'].join('\n');}
-function normalizeKnowledgeReply(text){let r=String(text||'').trim().replace(/^Induu:\s*/i,'').trim();if(!r)return '';if(r.length>1800)r=`${r.slice(0,1770).trim()}...`;if(!/assist you with a ride|ride today/i.test(r))r+=`\n\nHow can I assist you with a ride today?`;return r;}
+function indUUHelpText(){return ['*INDUU — WHAT I CAN DO*','','I am primarily your ride assistant, but I can also answer general questions.','','*Rides*','• Need a ride: "Need a ride from Juja to Nairobi tomorrow at 8am"','• Driver mode: "I am driving Juja to Nairobi"','• See rides: SHOW RIDES','• Driver availability: ONLINE / OFFLINE','• Accept: TAKE 123, ACCEPT 123, CLAIM 123, or reply 123 when a ride is offered','','*Account*','• PROFILE — view your profile','• MY RIDES — view recent rides','• USERNAME newname — update username when permitted','• LOCATION Juja — update your default location','','*Ride management*','• EXTEND RIDE 123','• CANCEL RIDE 123','• END RIDE','','Ask me "How do I update my profile?", "Why can’t I accept a ride?", or "What does ONLINE do?" and I can explain.'].join('\n');}
 function isInduuSelfQuestion(text){
   const l=String(text||'').toLowerCase().trim();
   return /\b(?:who are you|what are you|what can you do|what do you do|how do you work|how does induu work|what is induu|tell me about induu|your commands|commands|help me|update .*profile|edit .*profile|change .*profile|change .*username|update .*username|change .*location|update .*location|what does online do|what does offline do|how do i accept|how can i accept|why can.?t i accept|why is .* ride .* unavailable|what do .* ride .* mean|ride status|ride states|what happens after .*accept|how do ratings work|how do i rate|how do i cancel .*ride|how do i extend .*ride|how do i end .*ride|how do i complete .*ride|why was .* ride .* expired|what happened to .* ride|where is my ride|is my ride|my ride .* status|why am i offline|am i online)\b/i.test(l);
@@ -1184,7 +1184,7 @@ async function cancelRideForUser(phoneJid, phone, requestedId = null) {
 async function changeUsername(phoneJid, phone, requestedUsername) {
   const user = await User.getOrCreate(phone);
   const result = await User.changeUsernameSafely(phone, requestedUsername, USERNAME_CHANGE_LIMIT);
-  if (!result.success) return sendGupshupMessage(phoneJid, `⚠️ ${result.message}`);
+  if (!result.success) return sendGupshupMessage(phoneJid, `⚠️️ ${result.message}`);
   return sendGupshupMessage(phoneJid, `✅ Username updated to @${result.user.username}.\nYou have no username changes remaining.`);
 }
  
@@ -2272,3 +2272,4 @@ function qaTestExpiryRules() {
   qaAssert('expired request hidden', !isRideCurrentlyActionable(past));
   qaAssert('taken request hidden', !isRideCurrentlyActionable({ ...future, status: 'TAKEN' }));
 }
+
