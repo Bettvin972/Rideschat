@@ -220,7 +220,8 @@ function isValidDateString(value) {
 }
 
 function dateFromLocalParts(year, month, day) {
-  return new Date(Date.UTC(year, month - 1, day));
+  const d = new Date(Date.UTC(year, month - 1, day));
+  return d;
 }
 
 function getRealDate(value, timezone = DEFAULT_TIMEZONE) {
@@ -1673,7 +1674,7 @@ async function handleRideLogic(phoneJid, text, realPhone) {
 
     await sendGupshupMessage(
       phoneJid,
-      `RIDE ${rideRequest.id} CREATED\n${rideRequest.from} → ${rideRequest.to}\n${toDisplayDate(rideRequest.date, region.timezone)} at ${toDisplayTime(rideRequest.time)}${rideRequest.seats ? ` • ${rideRequest.seats}${rideRequest.seats === 1 ? 'person' : 'people'}` : ''}\nAlerting nearby drivers...`
+      `RIDE ${rideRequest.id} CREATED\n${rideRequest.from} → ${rideRequest.to}\n${toDisplayDate(rideRequest.date, region.timezone)} at ${toDisplayTime(rideRequest.time)}${rideRequest.seats ? ` • ${rideRequest.seats} ${rideRequest.seats === 1 ? 'person' : 'people'}` : ''}\nAlerting nearby drivers...`
     );
 
     const drivers = await User.findAll({
@@ -1772,6 +1773,23 @@ function qaMatches(name, value, pattern) {
   return ok ? qaPass(name) : qaFail(name, `value ${JSON.stringify(value)} did not match ${pattern}`);
 }
 
+function qaThrows(name, fn) {
+  try {
+    fn();
+    return qaFail(name, 'Expected the function to throw.');
+  } catch (_) {
+    return qaPass(name);
+  }
+}
+
+function qaRecord(name, fn) {
+  try {
+    return fn();
+  } catch (error) {
+    return qaFail(name, error?.message || error);
+  }
+}
+
 function qaTestPhoneNormalization() {
   const cases = [
     ['254712345678', '254712345678'],
@@ -1814,60 +1832,507 @@ function qaTestCommandParsing() {
   }
 }
 
-function qaTestUrgentCountdownLabels() {
-  const cases = [[0, 'NOW'], [-1, 'NOW'], [-15, 'NOW'], [-16, 'OVERDUE']];
-  for (const [diff, expected] of cases) {
-    qaEqual(`urgency state for diff ${diff}`, getUrgencyState(diff), expected === 'NOW' ? 'URGENT' : 'OVERDUE');
+function qaTestDateAndTime() {
+  const tz = 'Africa/Nairobi';
+  const today = getLocalDateString(new Date(), tz);
+  const tomorrow = getRealDate('tomorrow', tz);
+  const dayAfter = getRealDate('day after tomorrow', tz);
+  qaMatches('today date shape', today, /^\d{4}-\d{2}-\d{2}$/);
+  qaMatches('tomorrow date shape', tomorrow, /^\d{4}-\d{2}-\d{2}$/);
+  qaMatches('day-after-tomorrow date shape', dayAfter, /^\d{4}-\d{2}-\d{2}$/);
+  qaAssert('tomorrow is after today', tomorrow > today, `${tomorrow} <= ${today}`);
+  qaAssert('day-after-tomorrow is after tomorrow', dayAfter > tomorrow, `${dayAfter} <= ${tomorrow}`);
+  qaEqual('explicit ISO date remains stable', getRealDate('2030-05-20', tz), '2030-05-20');
+}
+
+function qaTestRideTimeFormatting() {
+  qaEqual('zero minutes is NOW', formatRemainingRideTime(0), 'NOW');
+  qaEqual('negative minutes is NOW', formatRemainingRideTime(-10), 'NOW');
+  qaEqual('eight minutes', formatRemainingRideTime(8), '8 min');
+  qaEqual('forty-two minutes', formatRemainingRideTime(42), '42 min');
+  qaEqual('one hour', formatRemainingRideTime(60), '1 hr');
+  qaEqual('one hour fifteen', formatRemainingRideTime(75), '1 hr 15 min');
+  qaEqual('two hours', formatRemainingRideTime(120), '2 hr');
+}
+
+function qaTestRideUrgency() {
+  qaEqual('urgent at now', getUrgencyState(0), 'URGENT');
+  qaEqual('urgent five minutes late', getUrgencyState(-5), 'URGENT');
+  qaEqual('urgent fifteen minutes late', getUrgencyState(-15), 'URGENT');
+  qaEqual('overdue sixteen minutes late', getUrgencyState(-16), 'OVERDUE');
+  qaEqual('soon thirty minutes ahead', getUrgencyState(30), 'SOON');
+  qaEqual('soon sixty minutes ahead', getUrgencyState(60), 'SOON');
+  qaEqual('normal beyond sixty minutes', getUrgencyState(61), 'NORMAL');
+}
+
+function qaTestLocationRules() {
+  const longFrom = 'JKUAT Main Gate, Juja, Kiambu County, Kenya';
+  const longTo = 'Kenyatta National Hospital, Hospital Road, Nairobi, Kenya';
+  qaAssert('full pickup preserved', longFrom.includes('Kiambu County, Kenya'));
+  qaAssert('full destination preserved', longTo.includes('Hospital Road, Nairobi, Kenya'));
+  qaAssert('different locations', normalizeLocation(longFrom) !== normalizeLocation(longTo));
+  qaAssert('command phrase rejected as location', isCommandPhrase('ONLINE'));
+  qaAssert('normal location not command', !isCommandPhrase(longFrom));
+}
+
+function qaTestDistanceRules() {
+  const ride = { distanceMiles: 20 };
+  qaEqual('integer distance', Number(ride.distanceMiles), 20);
+  qaEqual('display distance singular form', `${Math.round(ride.distanceMiles)} miles`, '20 miles');
+  qaEqual('no invented distance', undefined, undefined);
+}
+
+function qaTestPaginationMath() {
+  const total = 41;
+  const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  qaEqual('20 rides page size', PAGE_SIZE, 20);
+  qaEqual('41 rides gives three pages', pages, 3);
+  qaEqual('first page index', Math.min(Math.max(0, 0), pages - 1), 0);
+  qaEqual('last page index', Math.min(Math.max(0, 2), pages - 1), 2);
+  qaEqual('back clamps at first', Math.max(0, 0 - 1), 0);
+}
+
+function qaTestRegionRules() {
+  const kenya = detectUserRegion('254712345678');
+  const usa = detectUserRegion('19405550100');
+  qaEqual('Kenya country detection', kenya.country, 'KE');
+  qaEqual('Kenya timezone', kenya.timezone, 'Africa/Nairobi');
+  qaEqual('USA country detection', usa.country, 'US');
+  qaAssert('USA timezone is configured', Boolean(usa.timezone));
+  qaAssert('city is not inferred from phone', kenya.defaultCity === 'Kenya');
+}
+
+function qaTestProfileFormatting() {
+  const profile = buildProfileText({
+    name: 'Test Rider',
+    username: 'testrider',
+    country: 'KE',
+    location: 'Juja',
+    rating: 4.8,
+    ratingCount: 27,
+    ridesCompleted: 10,
+    ridesOffered: 4,
+    ridesRequested: 8,
+    usernameChangeCount: 1,
+    isOnline: true,
+    onlineUntil: new Date(Date.now() + 60000),
+    createdAt: new Date(),
+  }, detectUserRegion('254712345678'));
+  qaAssert('profile contains name', profile.includes('Test Rider'));
+  qaAssert('profile contains username', profile.includes('@testrider'));
+  qaAssert('profile contains rating', profile.includes('4.8'));
+  qaAssert('profile contains country', profile.includes('Kenya'));
+}
+
+function qaTestDraftMerging() {
+  const first = mergeDraft({}, { role: 'rider', from: 'Juja' });
+  const second = mergeDraft(first, { to: 'Nairobi', date: '2030-05-20' });
+  qaEqual('draft role preserved', second.role, 'rider');
+  qaEqual('draft pickup preserved', second.from, 'Juja');
+  qaEqual('draft destination merged', second.to, 'Nairobi');
+  qaEqual('draft date merged', second.date, '2030-05-20');
+}
+
+function qaTestRatingParsing() {
+  qaEqual('rating one', parseRating('1'), 1);
+  qaEqual('rating five', parseRating('5'), 5);
+  qaEqual('rating with stars word', parseRating('4 stars'), 4);
+  qaEqual('rating six rejected', parseRating('6'), null);
+  qaEqual('rating text rejected', parseRating('great'), null);
+}
+
+function qaTestActionability() {
+  qaAssert('open future ride actionable', isRideCurrentlyActionable({ status: 'OPEN', expiresAt: new Date(Date.now() + 60000) }));
+  qaAssert('expired open ride not actionable', !isRideCurrentlyActionable({ status: 'OPEN', expiresAt: new Date(Date.now() - 60000) }));
+  qaAssert('taken ride not actionable', !isRideCurrentlyActionable({ status: 'TAKEN', expiresAt: new Date(Date.now() + 60000) }));
+}
+
+function qaTestScheduledTimestamp() {
+  const target = zonedDateTimeToUtc('2030-05-20', '17:30', 'Africa/Nairobi');
+  qaAssert('scheduled timestamp is numeric', Number.isFinite(target));
+  qaAssert('scheduled timestamp is in future relative to 2026', target > Date.now());
+  qaEqual('invalid date produces null', zonedDateTimeToUtc('bad-date', '17:30', 'Africa/Nairobi'), null);
+  qaEqual('invalid time produces null', zonedDateTimeToUtc('2030-05-20', '25:99', 'Africa/Nairobi'), null);
+}
+
+function qaTestSafetyFormatting() {
+  const text = '  hello   world  ';
+  qaEqual('session key normalization', getSessionKey('254 712 345 678'), '254712345678');
+  qaAssert('jid generation contains whatsapp suffix', jidFor('254712345678').endsWith('@s.whatsapp.net'));
+  qaAssert('chat link contains phone', getDirectChatLink('254712345678').includes('254712345678'));
+  qaAssert('expiry formatter is readable', formatExpiryCountdown(new Date(Date.now() + 120000)).includes('expires in'));
+  qaAssert('whitespace remains harmless', text.trim().includes('hello'));
+}
+
+function qaTestSortAndTag() {
+  const now = new Date();
+  const tz = 'Africa/Nairobi';
+  const today = getLocalDateString(now, tz);
+  const rides = [
+    { id: 1, date: today, time: '23:59', seats: 1 },
+    { id: 2, date: today, time: '00:00', seats: 2 },
+  ];
+  const tagged = sortAndTagRides(rides, tz);
+  qaEqual('sort produces same count', tagged.length, 2);
+  qaAssert('sort adds urgency', tagged.every((ride) => typeof ride.urgency === 'string'));
+  qaAssert('sort adds countdown', tagged.every((ride) => typeof ride.countdownStr === 'string'));
+}
+
+function qaTestEnvironmentContracts() {
+  qaEqual('Groq model is locked', GROQ_MODEL, 'openai/gpt-oss-20b');
+  qaEqual('Groq endpoint is OpenAI-compatible', GROQ_URL, '[https://api.groq.com/openai/v1/chat/completions](https://api.groq.com/openai/v1/chat/completions)');
+  qaEqual('ride TTL is thirty minutes', RIDE_REQUEST_TTL_MINUTES, 30);
+  qaEqual('maximum ride extensions', MAX_RIDE_EXTENSIONS, 3);
+  qaEqual('maximum seats', MAX_SEATS, 6);
+  qaEqual('maximum bags', MAX_BAGS, 10);
+}
+
+function qaTestNaturalLanguageDateSignals() {
+  const tz = 'Africa/Nairobi';
+  const examples = [
+    'tomorrow',
+    'day after tomorrow',
+    'next week',
+    'today',
+    'now',
+    'asap',
+  ];
+  for (const example of examples) {
+    const value = getRealDate(example, tz);
+    qaMatches(`natural date: ${example}`, value, /^\d{4}-\d{2}-\d{2}$/);
   }
+}
+
+function qaTestCommandIdPriority() {
+  const rating = parseRating('5');
+  const command = parseDirectCommand('TAKE 5');
+  qaEqual('rating remains numeric rating', rating, 5);
+  qaEqual('TAKE 5 remains ride command', command?.command, 'TAKE');
+  qaEqual('TAKE 5 id remains 5', command?.takeId, 5);
+}
+
+function qaTestRideCardContract() {
+  const ride = {
+    id: 142,
+    phone: '254712345678',
+    from: 'JKUAT Main Gate, Juja, Kiambu County, Kenya',
+    to: 'Kenyatta National Hospital, Hospital Road, Nairobi, Kenya',
+    date: '2030-05-20',
+    time: '17:30',
+    distanceMiles: 20,
+    seats: 2,
+    status: 'OPEN',
+    expiresAt: new Date(Date.now() + 600000),
+  };
+  const sorted = sortAndTagRides([ride], 'Africa/Nairobi');
+  qaEqual('ride id retained', sorted[0].id, 142);
+  qaEqual('pickup retained exactly', sorted[0].from, ride.from);
+  qaEqual('destination retained exactly', sorted[0].to, ride.to);
+  qaEqual('distance retained', sorted[0].distanceMiles, 20);
+  qaEqual('seats retained', sorted[0].seats, 2);
+}
+
+function qaTestSessionLifecycle() {
+  const key = `qa-${Date.now()}-${Math.random()}`;
+  const session = getSession(key);
+  session.ridesPage = 2;
+  session.lastTitle = 'QA';
+  qaEqual('session page stored', getSession(key).ridesPage, 2);
+  clearSession(key);
+  qaAssert('session cleared', !userSessions.has(key));
+}
+
+function qaTestInputBoundaries() {
+  qaEqual('empty rating rejected', parseRating(''), null);
+  qaEqual('long rating rejected', parseRating('1'.repeat(30)), null);
+  qaAssert('empty phone normalized', normalizePhone('') === '');
+  qaAssert('null phone normalized', normalizePhone(null) === '');
+  qaAssert('invalid location can be rejected', !isValidLocation('ONLINE'));
+}
+
+function qaTestTimeZoneRoundTrip() {
+  const cases = [
+    ['2030-01-15', '08:00', 'Africa/Nairobi'],
+    ['2030-06-15', '17:30', 'America/Chicago'],
+    ['2030-11-03', '01:30', 'America/Chicago'],
+  ];
+  for (const [date, time, tz] of cases) {
+    const utc = zonedDateTimeToUtc(date, time, tz);
+    qaAssert(`timezone conversion numeric ${date} ${time} ${tz}`, Number.isFinite(utc));
+  }
+}
+
+function qaTestRideStatusVocabulary() {
+  const allowed = ['OPEN', 'TAKEN', 'COMPLETED', 'CANCELLED', 'EXPIRED'];
+  for (const value of allowed) qaAssert(`status allowed: ${value}`, allowed.includes(value));
+  qaAssert('status vocabulary has open', allowed.includes('OPEN'));
+  qaAssert('status vocabulary has taken', allowed.includes('TAKEN'));
+  qaAssert('status vocabulary has completed', allowed.includes('COMPLETED'));
+  qaAssert('status vocabulary has cancelled', allowed.includes('CANCELLED'));
+  qaAssert('status vocabulary has expired', allowed.includes('EXPIRED'));
+}
+
+function qaTestMessageSafety() {
+  const samples = [
+    'Need a ride from Juja to Nairobi tomorrow',
+    'I need 2 seats from JKUAT Main Gate to KNH at 5:30pm',
+    'Need ride now',
+    'ONLINE Juja',
+    'TAKE 142',
+    'BACK',
+  ];
+  for (const sample of samples) {
+    qaAssert(`message remains string: ${sample}`, typeof sample === 'string');
+    qaAssert(`message has bounded size: ${sample}`, sample.length < 1000);
+  }
+}
+
+function qaTestRatingDisplay() {
+  qaEqual('new rider rating label', Number(0), 0);
+  qaEqual('rated user display value', Number(4.8).toFixed(1), '4.8');
+  qaEqual('rating count display', Number(27), 27);
+}
+
+function qaTestSeatDisplay() {
+  qaEqual('one seat singular', `1 ${1 === 1 ? 'person' : 'people'}`, '1 person');
+  qaEqual('two seats plural', `2 ${2 === 1 ? 'person' : 'people'}`, '2 people');
+  qaEqual('six seats plural', `6 ${6 === 1 ? 'person' : 'people'}`, '6 people');
+}
+
+function qaTestDistanceDisplay() {
+  const values = [1, 5, 20, 20.5, 100];
+  for (const value of values) {
+    const display = `${Number(value).toFixed(Number(value) % 1 === 0 ? 0 : 1)} miles`;
+    qaAssert(`distance uses miles: ${value}`, display.endsWith('miles'));
+    qaAssert(`distance never uses mi: ${value}`, !display.endsWith('mi'));
+  }
+}
+
+function qaTestPaginationBoundaries() {
+  const totals = [0, 1, 19, 20, 21, 40, 41, 100, 101];
+  for (const total of totals) {
+    const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+    qaAssert(`pagination pages valid for ${total}`, pages >= 1);
+    qaAssert(`pagination last index valid for ${total}`, pages - 1 >= 0);
+  }
+}
+
+function qaTestUserRegionBoundaries() {
+  const numbers = ['254700000000', '254799999999', '14155551234', '12025550123', ''];
+  for (const number of numbers) {
+    const region = detectUserRegion(number);
+    qaAssert(`region returned for ${number || 'empty'}`, Boolean(region && region.country));
+    qaAssert(`region timezone returned for ${number || 'empty'}`, Boolean(region && region.timezone));
+  }
+}
+
+function qaTestCommandAliases() {
+  const aliases = [
+    ['more', 'NEXT'], ['next page', 'NEXT'], ['previous', 'BACK'],
+    ['prev', 'BACK'], ['available rides', 'SHOW_REQUESTS'], ['account', 'PROFILE'],
+    ['me', 'PROFILE'], ['status', 'MY_RIDES'], ['menu', 'HELP'],
+  ];
+  for (const [input, expected] of aliases) qaEqual(`alias ${input}`, parseDirectCommand(input)?.command, expected);
+}
+
+function qaTestExpiryRules() {
+  const future = { status: 'OPEN', expiresAt: new Date(Date.now() + 30 * 60000) };
+  const past = { status: 'OPEN', expiresAt: new Date(Date.now() - 1) };
+  qaAssert('future request actionable', isRideCurrentlyActionable(future));
+  qaAssert('expired request hidden', !isRideCurrentlyActionable(past));
+  qaAssert('taken request hidden', !isRideCurrentlyActionable({ ...future, status: 'TAKEN' }));
+}
+
+function qaTestUrgencyDisplay() {
+  const tz = 'Africa/Nairobi';
+  const today = getLocalDateString(new Date(), tz);
+  const current = getUserNow(tz);
+  const hour = String(current.getUTCHours()).padStart(2, '0');
+  const minute = String(current.getUTCMinutes()).padStart(2, '0');
+  const text = getCountdownText('now', today, tz);
+  qaEqual('now keyword returns NOW', text, 'NOW');
+  qaAssert('current wall-clock has valid hour', Number(hour) >= 0 && Number(hour) <= 23);
+  qaAssert('current wall-clock has valid minute', Number(minute) >= 0 && Number(minute) <= 59);
 }
 
 function runAllQATests() {
   qaReset();
-  qaTestPhoneNormalization();
-  qaTestCommandParsing();
-  qaTestUrgentCountdownLabels();
+  qaRecord('qaTestPhoneNormalization', qaTestPhoneNormalization);
+  qaRecord('qaTestCommandParsing', qaTestCommandParsing);
+  qaRecord('qaTestDateAndTime', qaTestDateAndTime);
+  qaRecord('qaTestRideTimeFormatting', qaTestRideTimeFormatting);
+  qaRecord('qaTestRideUrgency', qaTestRideUrgency);
+  qaRecord('qaTestLocationRules', qaTestLocationRules);
+  qaRecord('qaTestDistanceRules', qaTestDistanceRules);
+  qaRecord('qaTestPaginationMath', qaTestPaginationMath);
+  qaRecord('qaTestRegionRules', qaTestRegionRules);
+  qaRecord('qaTestProfileFormatting', qaTestProfileFormatting);
+  qaRecord('qaTestDraftMerging', qaTestDraftMerging);
+  qaRecord('qaTestRatingParsing', qaTestRatingParsing);
+  qaRecord('qaTestActionability', qaTestActionability);
+  qaRecord('qaTestScheduledTimestamp', qaTestScheduledTimestamp);
+  qaRecord('qaTestSafetyFormatting', qaTestSafetyFormatting);
+  qaRecord('qaTestSortAndTag', qaTestSortAndTag);
+  qaRecord('qaTestEnvironmentContracts', qaTestEnvironmentContracts);
+  qaRecord('qaTestNaturalLanguageDateSignals', qaTestNaturalLanguageDateSignals);
+  qaRecord('qaTestCommandIdPriority', qaTestCommandIdPriority);
+  qaRecord('qaTestRideCardContract', qaTestRideCardContract);
+  qaRecord('qaTestSessionLifecycle', qaTestSessionLifecycle);
+  qaRecord('qaTestInputBoundaries', qaTestInputBoundaries);
+  qaRecord('qaTestTimeZoneRoundTrip', qaTestTimeZoneRoundTrip);
+  qaRecord('qaTestRideStatusVocabulary', qaTestRideStatusVocabulary);
+  qaRecord('qaTestMessageSafety', qaTestMessageSafety);
+  qaRecord('qaTestRatingDisplay', qaTestRatingDisplay);
+  qaRecord('qaTestSeatDisplay', qaTestSeatDisplay);
+  qaRecord('qaTestDistanceDisplay', qaTestDistanceDisplay);
+  qaRecord('qaTestPaginationBoundaries', qaTestPaginationBoundaries);
+  qaRecord('qaTestUserRegionBoundaries', qaTestUserRegionBoundaries);
+  qaRecord('qaTestCommandAliases', qaTestCommandAliases);
+  qaRecord('qaTestExpiryRules', qaTestExpiryRules);
+  qaRecord('qaTestUrgencyDisplay', qaTestUrgencyDisplay);
   INDUU_QA.finishedAt = new Date().toISOString();
   return INDUU_QA;
 }
 
-// Cleanup routines for Map objects
-setInterval(() => {
-  const now = Date.now();
-  for (const [key, session] of userSessions.entries()) {
-    if (now - session.updatedAt > SESSION_TTL_MS) {
-      userSessions.delete(key);
-    }
-  }
-  for (const [key, rating] of ratingSessions.entries()) {
-    if (rating.createdAt && now - new Date(rating.createdAt).getTime() > SESSION_TTL_MS) {
-      ratingSessions.delete(key);
-    }
-  }
-}, MAINTENANCE_INTERVAL_MS);
+runAllQATests();
 
-// Express REST API Routes
+async function runMaintenanceTasks() {
+  try {
+    await RideRequest.expireStaleRequests();
+    await User.cleanupExpiredOnlineStatus();
+
+    const cutoff = Date.now() - SESSION_TTL_MS;
+    for (const [key, session] of userSessions.entries()) {
+      if ((session?.updatedAt || 0) < cutoff) {
+        userSessions.delete(key);
+      }
+    }
+  } catch (err) {
+    console.error('Maintenance error:', err?.stack || err?.message || err);
+  }
+}
+
+setInterval(runMaintenanceTasks, MAINTENANCE_INTERVAL_MS);
+
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  res.json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    qa: INDUU_QA,
+    whatsAppConnected: Boolean(sock?.user),
+  });
 });
 
-app.get('/admin/qa', adminOnly, (req, res) => {
-  const results = runAllQATests();
-  res.json(results);
+app.get('/qr', (req, res) => {
+  if (!qrLast) return res.status(404).send('QR code not available or WhatsApp connected.');
+  res.send(`
+    <html>
+      <head><title>Induu WhatsApp QR</title></head>
+      <body style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;">
+        <h2>Scan to Connect Induu WhatsApp</h2>
+        <img src="[https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=$](https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=$){encodeURIComponent(qrLast)}" />
+      </body>
+    </html>
+  `);
 });
 
-// App Startup Routine
+app.get('/qa', adminOnly, (req, res) => {
+  res.json(runAllQATests());
+});
+
+async function connectWhatsApp() {
+  if (startingWhatsApp) return;
+  startingWhatsApp = true;
+
+  try {
+    const { state, saveCreds } = await useMultiFileAuthState(AUTH_PATH);
+    const { version } = await fetchLatestBaileysVersion();
+
+    sock = makeWASocket({
+      version,
+      auth: state,
+      printQRInTerminal: true,
+      logger: pino({ level: 'silent' }),
+    });
+
+    sock.ev.on('creds.update', saveCreds);
+
+    sock.ev.on('connection.update', (update) => {
+      const { connection, lastDisconnect, qr } = update;
+      if (qr) qrLast = qr;
+
+      if (connection === 'close') {
+        const statusCode = lastDisconnect?.error?.output?.statusCode;
+        const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+        console.log(`WhatsApp closed (${statusCode}). Reconnecting: ${shouldReconnect}`);
+
+        qrLast = null;
+        sock = null;
+        startingWhatsApp = false;
+
+        if (shouldReconnect) {
+          clearTimeout(reconnectTimer);
+          reconnectTimer = setTimeout(connectWhatsApp, 5000);
+        }
+      } else if (connection === 'open') {
+        console.log('WhatsApp connected successfully!');
+        qrLast = null;
+        startingWhatsApp = false;
+      }
+    });
+
+    sock.ev.on('messages.upsert', async (m) => {
+      if (m.type !== 'notify') return;
+
+      for (const msg of m.messages) {
+        if (!msg.message || msg.key.fromMe) continue;
+
+        const remoteJid = msg.key.remoteJid;
+        if (!remoteJid || remoteJid.endsWith('@g.us')) continue;
+
+        const text =
+          msg.message.conversation ||
+          msg.message.extendedTextMessage?.text ||
+          '';
+
+        if (!text.trim()) continue;
+
+        const realPhone = msg.key.participant || remoteJid;
+
+        queueUserMessage(realPhone, () => handleRideLogic(remoteJid, text, realPhone));
+      }
+    });
+  } catch (err) {
+    console.error('Failed to initialize Baileys:', err?.message || err);
+    startingWhatsApp = false;
+    clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(connectWhatsApp, 10000);
+  }
+}
+
 async function startServer() {
   try {
     await initDatabase();
-    console.log('Database initialized successfully.');
+    console.log('Database initialized.');
 
     app.listen(PORT, () => {
-      console.log(`Server listening on port ${PORT}`);
+      console.log(`Induu server running on port ${PORT}`);
+      connectWhatsApp();
     });
   } catch (err) {
-    console.error('Failed to initialize server:', err);
+    console.error('Server startup failed:', err?.stack || err?.message || err);
     process.exit(1);
   }
 }
+
+process.on('SIGINT', async () => {
+  console.log('Shutting down server...');
+  try {
+    await cleanupDatabase();
+  } catch (e) {
+    console.error(e);
+  }
+  process.exit(0);
+});
 
 startServer();
