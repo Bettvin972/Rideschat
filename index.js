@@ -25,9 +25,7 @@ app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true }));
  
 const PORT = Number(process.env.PORT || 10000);
-
-const AUTH_PATH = process.env.RENDER_DISK_PATH || path.join(__dirname, 'auth_info');
-
+const AUTH_PATH = path.join(__dirname, 'auth_info');
 const PAGE_SIZE = 20;
 const DEFAULT_ONLINE_HOURS = 2;
 const DEFAULT_TIMEZONE = 'America/Chicago';
@@ -219,11 +217,6 @@ function getTimeGreeting(timezone) {
  
 function isValidDateString(value) {
   return /^\d{4}-\d{2}-\d{2}$/.test(String(value || ''));
-}
- 
-function dateFromLocalParts(year, month, day) {
-  const d = new Date(Date.UTC(year, month - 1, day));
-  return d;
 }
  
 function getRealDate(value, timezone = DEFAULT_TIMEZONE) {
@@ -833,153 +826,163 @@ function killChatFor(phone) {
 const INDUU_SELF_KNOWLEDGE = {
   identity: 'Induu is a student-focused ride-sharing assistant. Its primary job is to help riders request rides, help drivers discover and accept rides, manage ride status, and guide users through profiles and account features. It can also answer general knowledge questions, but ride assistance is its main purpose.',
   capabilities: ['request rides in natural language','understand dates, times and passenger counts','create and track ride requests','show rides to drivers','ONLINE/OFFLINE driver availability','ride filtering and pagination','ride acceptance','profile and ride history','username and default-location updates','ride extension and cancellation','trip completion','rider/driver chat','ratings','ride-state/error explanations','general knowledge answers'],
-  commands: {HELP:'Shows help.',PROFILE:'Shows the profile.',MY_RIDES:'Shows recent rides.',ONLINE:'Makes a driver available and can filter by area.',OFFLINE:'Marks a driver offline.','SHOW RIDES':'Shows actionable open rides.',TAKE:'Accepts an open ride, e.g. TAKE 123.',USERNAME:'Changes username when permitted.',LOCATION:'Changes default location.',EXTEND:'Ends or extends an eligible open ride.', 'CANCEL RIDE':'Cancels the rider’s open request.','END RIDE':'Completes an accepted ride.',NEXT:'Next ride-list page.',BACK:'Previous ride-list page.',CLEAR:'Clears a ride-area filter.'},
+  commands: {HELP:'Shows help.',PROFILE:'Shows the profile.',MY_RIDES:'Shows recent rides.',ONLINE:'Makes a driver available and can filter by area.',OFFLINE:'Marks a driver offline.','SHOW RIDES':'Shows actionable open rides.',TAKE:'Accepts an open ride, e.g. TAKE 123.',USERNAME:'Changes username when permitted.',LOCATION:'Changes default location.',EXTEND:'Extends an eligible open ride.', 'CANCEL RIDE':'Cancels the rider’s open request.','END RIDE':'Completes an accepted ride.',NEXT:'Next ride-list page.',BACK:'Previous ride-list page.',CLEAR:'Clears a ride-area filter.'},
   rideStates: {OPEN:'Available to eligible drivers while its request window is active.',TAKEN:'Accepted by a driver; rider and driver are connected.',COMPLETED:'Trip completed.',CANCELLED:'Cancelled by the rider.',EXPIRED:'Request window ended before acceptance.'}
 };
-function indUUHelpText(){return ['*INDUU — WHAT I CAN DO*','','I am primarily your ride assistant, but I can also answer general questions.','','*Rides*','• Need a ride: "Need a ride from Juja to Nairobi tomorrow at 8am"','• Driver mode: "I am driving Juja to Nairobi"','• See rides: SHOW RIDES','• Driver availability: ONLINE / OFFLINE','• Accept: TAKE 123, ACCEPT 123, CLAIM 123, or reply 123 when a ride is offered','','*Account*','• PROFILE — view your profile','• MY RIDES — view recent rides','• USERNAME newname — update username when permitted','• LOCATION Juja — update your default location','','*Ride management*','• EXTEND RIDE 123','• CANCEL RIDE 123','• END RIDE','','Ask me "How do I update my profile?", "Why can’t I accept a ride?", or "What does ONLINE do?" and I can explain.'].join('\n');}
-function normalizeKnowledgeReply(text){let r=String(text||'').trim().replace(/^Induu:\s*/i,'').trim();if(!r)return '';if(r.length>1800)r=`${r.slice(0,1770).trim()}...`;if(!/assist you with a ride|ride today/i.test(r))r+=`\n\nHow can I assist you with a ride today?`;return r;}
-function isInduuSelfQuestion(text){
-  const l=String(text||'').toLowerCase().trim();
+
+function indUUHelpText() {
+  return ['*INDUU — WHAT I CAN DO*', '', 'I am primarily your ride assistant, but I can also answer general questions.', '', '*Rides*', '• Need a ride: "Need a ride from Juja to Nairobi tomorrow at 8am"', '• Driver mode: "I am driving Juja to Nairobi"', '• See rides: SHOW RIDES', '• Driver availability: ONLINE / OFFLINE', '• Accept: TAKE 123, ACCEPT 123, CLAIM 123, or reply 123 when a ride is offered', '', '*Account*', '• PROFILE — view your profile', '• MY RIDES — view recent rides', '• USERNAME newname — update username when permitted', '• LOCATION Juja — update your default location', '', '*Ride management*', '• EXTEND RIDE 123', '• CANCEL RIDE 123', '• END RIDE', '', 'Ask me "How do I update my profile?", "Why can’t I accept a ride?", or "What does ONLINE do?" and I can explain.'].join('\n');
+}
+
+function appendRideRedirect(text) {
+  const r = String(text || '').trim();
+  if (!r) return '';
+  return /assist you with a ride|ride today/i.test(r) ? r : `${r}\n\nHow can I assist you with a ride today?`;
+}
+
+function normalizeKnowledgeReply(text) {
+  let r = String(text || '').trim().replace(/^Induu:\s*/i, '').trim();
+  if (!r) return '';
+  if (r.length > 1800) r = `${r.slice(0, 1770).trim()}...`;
+  return appendRideRedirect(r);
+}
+
+function isInduuSelfQuestion(text) {
+  const l = String(text || '').toLowerCase().trim();
   return /\b(?:who are you|what are you|what can you do|what do you do|how do you work|how does induu work|what is induu|tell me about induu|your commands|commands|help me|update .*profile|edit .*profile|change .*profile|change .*username|update .*username|change .*location|update .*location|what does online do|what does offline do|how do i accept|how can i accept|why can.?t i accept|why is .* ride .* unavailable|what do .* ride .* mean|ride status|ride states|what happens after .*accept|how do ratings work|how do i rate|how do i cancel .*ride|how do i extend .*ride|how do i end .*ride|how do i complete .*ride|why was .* ride .* expired|what happened to .* ride|where is my ride|is my ride|my ride .* status|why am i offline|am i online)\b/i.test(l);
 }
  
-function extractQuestionRideId(text){
-  const l=String(text||'').trim();
-  const m=l.match(/(?:ride|request|trip)\s*#?\s*(\d+)\b/i) || l.match(/#(\d+)\b/);
+function extractQuestionRideId(text) {
+  const l = String(text || '').trim();
+  const m = l.match(/(?:ride|request|trip)\s*#?\s*(\d+)\b/i) || l.match(/#(\d+)\b/);
   return m ? Number(m[1]) : null;
 }
  
-function dynamicRideStateLabel(ride, now = new Date()){
-  if(!ride) return 'UNKNOWN';
-  const status=String(ride.status||'').toUpperCase();
-  if(status==='OPEN' && hasExpired(ride)) return 'EXPIRED';
+function dynamicRideStateLabel(ride, now = new Date()) {
+  if (!ride) return 'UNKNOWN';
+  const status = String(ride.status || '').toUpperCase();
+  if (status === 'OPEN' && hasExpired(ride)) return 'EXPIRED';
   return status || 'UNKNOWN';
 }
  
-function formatDynamicRideSummary(ride, region){
-  if(!ride) return 'I could not find that ride in the database.';
-  const state=dynamicRideStateLabel(ride);
-  const date=ride.date ? toDisplayDate(ride.date, region.timezone) : 'date not set';
-  const time=ride.time ? toDisplayTime(ride.time) : 'time not set';
-  const route=`${ride.from || 'unknown pickup'} → ${ride.to || 'unknown destination'}`;
-  const seats=Number(ride.seats || ride.passengerCount || 1);
-  const lines=[`Ride #${ride.id}`,route,`${date} • ${time} • ${seats} ${seats===1?'person':'people'}`,`Status: ${state}`];
-  if(ride.driverPhone) lines.push(`Driver assigned: yes`);
-  else if(state==='OPEN') lines.push(`Driver assigned: no`);
-  if(ride.createdAt) lines.push(`Created: ${new Date(ride.createdAt).toLocaleString('en-US',{timeZone:region.timezone})}`);
-  if(ride.expiresAt) lines.push(`Request window: ${new Date(ride.expiresAt).toLocaleString('en-US',{timeZone:region.timezone})}`);
-  if(ride.claimedAt) lines.push(`Accepted: ${new Date(ride.claimedAt).toLocaleString('en-US',{timeZone:region.timezone})}`);
-  if(ride.completedAt) lines.push(`Completed: ${new Date(ride.completedAt).toLocaleString('en-US',{timeZone:region.timezone})}`);
-  if(ride.cancelledAt) lines.push(`Cancelled: ${new Date(ride.cancelledAt).toLocaleString('en-US',{timeZone:region.timezone})}`);
+function formatDynamicRideSummary(ride, region) {
+  if (!ride) return 'I could not find that ride in the database.';
+  const state = dynamicRideStateLabel(ride);
+  const date = ride.date ? toDisplayDate(ride.date, region.timezone) : 'date not set';
+  const time = ride.time ? toDisplayTime(ride.time) : 'time not set';
+  const route = `${ride.from || 'unknown pickup'} → ${ride.to || 'unknown destination'}`;
+  const seats = Number(ride.seats || ride.passengerCount || 1);
+  const lines = [`Ride #${ride.id}`, route, `${date} • ${time} • ${seats} ${seats === 1 ? 'person' : 'people'}`, `Status: ${state}`];
+  if (ride.driverPhone) lines.push(`Driver assigned: yes`);
+  else if (state === 'OPEN') lines.push(`Driver assigned: no`);
+  if (ride.createdAt) lines.push(`Created: ${new Date(ride.createdAt).toLocaleString('en-US', { timeZone: region.timezone })}`);
+  if (ride.expiresAt) lines.push(`Request window: ${new Date(ride.expiresAt).toLocaleString('en-US', { timeZone: region.timezone })}`);
+  if (ride.claimedAt) lines.push(`Accepted: ${new Date(ride.claimedAt).toLocaleString('en-US', { timeZone: region.timezone })}`);
+  if (ride.completedAt) lines.push(`Completed: ${new Date(ride.completedAt).toLocaleString('en-US', { timeZone: region.timezone })}`);
+  if (ride.cancelledAt) lines.push(`Cancelled: ${new Date(ride.cancelledAt).toLocaleString('en-US', { timeZone: region.timezone })}`);
   return lines.join('\n');
 }
  
-async function getDynamicRideContext(phone, region, requestedRideId=null){
-  const phoneKey=normalizePhone(phone);
-  const result={requestedRide:null,latestRide:null,openRide:null,takenRide:null,counts:{},user:null};
-  try { result.user=await User.getOrCreate(phoneKey); } catch(_) {}
+async function getDynamicRideContext(phone, region, requestedRideId = null) {
+  const phoneKey = normalizePhone(phone);
+  const result = { requestedRide: null, latestRide: null, openRide: null, takenRide: null, counts: {}, user: null };
+  try { result.user = await User.getOrCreate(phoneKey); } catch (_) {}
   try {
-    if(requestedRideId) result.requestedRide=await RideRequest.findByPk(Number(requestedRideId));
-    result.latestRide=await RideRequest.findOne({where:{phone:phoneKey},order:[['createdAt','DESC']]});
-    result.openRide=await RideRequest.findOne({where:{phone:phoneKey,status:'OPEN'},order:[['createdAt','DESC']]});
-    result.takenRide=await RideRequest.findOne({where:{[Op.or]:[{phone:phoneKey},{driverPhone:phoneKey}],status:'TAKEN'},order:[['updatedAt','DESC']]});
-    result.counts={
-      requested:await RideRequest.count({where:{phone:phoneKey}}),
-      open:await RideRequest.count({where:{phone:phoneKey,status:'OPEN'}}),
-      taken:await RideRequest.count({where:{[Op.or]:[{phone:phoneKey},{driverPhone:phoneKey}],status:'TAKEN'}}),
-      completed:await RideRequest.count({where:{[Op.or]:[{phone:phoneKey},{driverPhone:phoneKey}],status:'COMPLETED'}}),
-      cancelled:await RideRequest.count({where:{phone:phoneKey,status:'CANCELLED'}}),
-      expired:await RideRequest.count({where:{phone:phoneKey,status:'EXPIRED'}}),
+    if (requestedRideId) result.requestedRide = await RideRequest.findByPk(Number(requestedRideId));
+    result.latestRide = await RideRequest.findOne({ where: { phone: phoneKey }, order: [['createdAt', 'DESC']] });
+    result.openRide = await RideRequest.findOne({ where: { phone: phoneKey, status: 'OPEN' }, order: [['createdAt', 'DESC']] });
+    result.takenRide = await RideRequest.findOne({ where: { [Op.or]: [{ phone: phoneKey }, { driverPhone: phoneKey }], status: 'TAKEN' }, order: [['updatedAt', 'DESC']] });
+    result.counts = {
+      requested: await RideRequest.count({ where: { phone: phoneKey } }),
+      open: await RideRequest.count({ where: { phone: phoneKey, status: 'OPEN' } }),
+      taken: await RideRequest.count({ where: { [Op.or]: [{ phone: phoneKey }, { driverPhone: phoneKey }], status: 'TAKEN' } }),
+      completed: await RideRequest.count({ where: { [Op.or]: [{ phone: phoneKey }, { driverPhone: phoneKey }], status: 'COMPLETED' } }),
+      cancelled: await RideRequest.count({ where: { phone: phoneKey, status: 'CANCELLED' } }),
+      expired: await RideRequest.count({ where: { phone: phoneKey, status: 'EXPIRED' } }),
     };
-  } catch(err){ console.error('Dynamic ride context error:',err?.message||err); }
+  } catch (err) { console.error('Dynamic ride context error:', err?.message || err); }
   return result;
 }
  
-function appendRideRedirect(text){
-  const r=String(text||'').trim();
-  if(!r) return '';
-  return /assist you with a ride|ride today/i.test(r) ? r : `${r}\n\nHow can I assist you with a ride today?`;
-}
+async function answerSelfQuestion(text, user, region, phone) {
+  const l = String(text || '').toLowerCase().trim();
+  if (['help', 'menu', '?'].includes(l)) return indUUHelpText();
+  const rideId = extractQuestionRideId(text);
+  const dynamic = await getDynamicRideContext(phone, region, rideId);
  
-async function answerSelfQuestion(text,user,region,phone){
-  const l=String(text||'').toLowerCase().trim();
-  if(['help','menu','?'].includes(l))return indUUHelpText();
-  const rideId=extractQuestionRideId(text);
-  const dynamic=await getDynamicRideContext(phone,region,rideId);
- 
-  if(/\b(?:why can.?t i accept|why .* ride .* unavailable|accept.*ride|take.*ride)\b/i.test(l)){
-    if(!rideId) return appendRideRedirect('To accept a ride, use TAKE 123, ACCEPT 123, CLAIM 123, or reply with the ride number when Induu has just offered it. If you give me the ride number, I can check its current database status and explain exactly why it can or cannot be accepted.');
-    const ride=dynamic.requestedRide;
-    if(!ride) return appendRideRedirect(`I cannot find ride #${rideId} in the current database. It may have been removed or the number may be incorrect.`);
-    const state=dynamicRideStateLabel(ride);
-    const driver=normalizePhone(phone);
-    if(normalizePhone(ride.phone)===driver)return appendRideRedirect(`Ride #${rideId} belongs to you, so Induu will not let you accept your own ride.`);
-    if(state==='OPEN' && !hasExpired(ride))return appendRideRedirect(`Ride #${rideId} is currently OPEN and its request window has not expired. It should be claimable unless another driver claims it first; acceptance is protected by a database transaction.`);
-    if(state==='TAKEN')return appendRideRedirect(`Ride #${rideId} is already TAKEN. Driver ${ride.driverPhone ? 'is assigned' : 'was assigned'} to it, so another driver cannot claim it.`);
-    if(state==='CANCELLED')return appendRideRedirect(`Ride #${rideId} was CANCELLED by the rider, so it is no longer available.`);
-    if(state==='EXPIRED')return appendRideRedirect(`Ride #${rideId} is EXPIRED. Its request window ended before it was accepted.`);
-    if(state==='COMPLETED')return appendRideRedirect(`Ride #${rideId} is already COMPLETED, so it cannot be accepted.`);
+  if (/\b(?:why can.?t i accept|why .* ride .* unavailable|accept.*ride|take.*ride)\b/i.test(l)) {
+    if (!rideId) return appendRideRedirect('To accept a ride, use TAKE 123, ACCEPT 123, CLAIM 123, or reply with the ride number when Induu has just offered it. If you give me the ride number, I can check its current database status and explain exactly why it can or cannot be accepted.');
+    const ride = dynamic.requestedRide;
+    if (!ride) return appendRideRedirect(`I cannot find ride #${rideId} in the current database. It may have been removed or the number may be incorrect.`);
+    const state = dynamicRideStateLabel(ride);
+    const driver = normalizePhone(phone);
+    if (normalizePhone(ride.phone) === driver) return appendRideRedirect(`Ride #${rideId} belongs to you, so Induu will not let you accept your own ride.`);
+    if (state === 'OPEN' && !hasExpired(ride)) return appendRideRedirect(`Ride #${rideId} is currently OPEN and its request window has not expired. It should be claimable unless another driver claims it first; acceptance is protected by a database transaction.`);
+    if (state === 'TAKEN') return appendRideRedirect(`Ride #${rideId} is already TAKEN. Driver ${ride.driverPhone ? 'is assigned' : 'was assigned'} to it, so another driver cannot claim it.`);
+    if (state === 'CANCELLED') return appendRideRedirect(`Ride #${rideId} was CANCELLED by the rider, so it is no longer available.`);
+    if (state === 'EXPIRED') return appendRideRedirect(`Ride #${rideId} is EXPIRED. Its request window ended before it was accepted.`);
+    if (state === 'COMPLETED') return appendRideRedirect(`Ride #${rideId} is already COMPLETED, so it cannot be accepted.`);
     return appendRideRedirect(`Ride #${rideId} currently has status ${state}. That state does not allow a new driver to claim it.`);
   }
  
-  if(/\b(?:why was .* ride .* expired|why .* ride .* expired|what happened to .* ride|where is my ride|is my ride|my ride .* status|ride status)\b/i.test(l)){
-    const ride=dynamic.requestedRide || dynamic.latestRide || dynamic.takenRide;
-    if(!ride) return appendRideRedirect(`I could not find a ride associated with your account. You currently have ${dynamic.counts.requested||0} recorded ride request${(dynamic.counts.requested||0)===1?'':'s'}.`);
-    let explanation=formatDynamicRideSummary(ride,region);
-    const state=dynamicRideStateLabel(ride);
-    if(state==='EXPIRED') explanation+='\n\nWhy: the ride remained unclaimed until its request window expired.';
-    else if(state==='TAKEN') explanation+='\n\nThe ride has been matched with a driver and is now an active trip.';
-    else if(state==='OPEN') explanation+='\n\nThe request is still open and waiting for a driver.';
-    else if(state==='CANCELLED') explanation+='\n\nThe request was cancelled and is no longer available.';
-    else if(state==='COMPLETED') explanation+='\n\nThe trip has already been completed.';
+  if (/\b(?:why was .* ride .* expired|why .* ride .* expired|what happened to .* ride|where is my ride|is my ride|my ride .* status|ride status)\b/i.test(l)) {
+    const ride = dynamic.requestedRide || dynamic.latestRide || dynamic.takenRide;
+    if (!ride) return appendRideRedirect(`I could not find a ride associated with your account. You currently have ${dynamic.counts.requested || 0} recorded ride request${(dynamic.counts.requested || 0) === 1 ? '' : 's'}.`);
+    let explanation = formatDynamicRideSummary(ride, region);
+    const state = dynamicRideStateLabel(ride);
+    if (state === 'EXPIRED') explanation += '\n\nWhy: the ride remained unclaimed until its request window expired.';
+    else if (state === 'TAKEN') explanation += '\n\nThe ride has been matched with a driver and is now an active trip.';
+    else if (state === 'OPEN') explanation += '\n\nThe request is still open and waiting for a driver.';
+    else if (state === 'CANCELLED') explanation += '\n\nThe request was cancelled and is no longer available.';
+    else if (state === 'COMPLETED') explanation += '\n\nThe trip has already been completed.';
     return appendRideRedirect(explanation);
   }
  
-  if(/\b(?:why am i offline|am i online|my online status|online status)\b/i.test(l)){
-    const u=dynamic.user || user;
-    const online=Boolean(u?.isOnline && u?.onlineUntil && new Date(u.onlineUntil)>new Date());
-    const until=u?.onlineUntil ? new Date(u.onlineUntil).toLocaleString('en-US',{timeZone:region.timezone}) : null;
-    return appendRideRedirect(online ? `You are currently ONLINE as a driver${until ? ` until ${until}`:''}.` : 'You are currently OFFLINE as a driver. Say ONLINE to become available to drivers and start seeing actionable ride requests.');
+  if (/\b(?:why am i offline|am i online|my online status|online status)\b/i.test(l)) {
+    const u = dynamic.user || user;
+    const online = Boolean(u?.isOnline && u?.onlineUntil && new Date(u.onlineUntil) > new Date());
+    const until = u?.onlineUntil ? new Date(u.onlineUntil).toLocaleString('en-US', { timeZone: region.timezone }) : null;
+    return appendRideRedirect(online ? `You are currently ONLINE as a driver${until ? ` until ${until}` : ''}.` : 'You are currently OFFLINE as a driver. Say ONLINE to become available to drivers and start seeing actionable ride requests.');
   }
  
-  if(/\b(?:what happened to my ride|my ride|ride)\b/i.test(l) && rideId){
-    return appendRideRedirect(formatDynamicRideSummary(dynamic.requestedRide,region));
+  if (/\b(?:what happened to my ride|my ride|ride)\b/i.test(l) && rideId) {
+    return appendRideRedirect(formatDynamicRideSummary(dynamic.requestedRide, region));
   }
  
-  if(/\b(?:who are you|what are you|what is induu|tell me about induu)\b/i.test(l))return appendRideRedirect(INDUU_SELF_KNOWLEDGE.identity);
-  if(/\b(?:what can you do|what do you do|how do you work|your commands|commands)\b/i.test(l))return appendRideRedirect(indUUHelpText());
-  if(/\b(?:profile|update .*profile|edit .*profile|change .*profile)\b/i.test(l))return appendRideRedirect(`Use PROFILE to view your current profile. It shows your name, username, country, default location, rating, ride statistics and driver status. Use USERNAME newname to change your username when permitted, and LOCATION Juja to change your default location.`);
-  if(/\b(?:username)\b.*\b(?:change|update|edit|set)\b|\b(?:change|update|edit|set)\b.*\busername\b/i.test(l)){const n=Math.max(0,USERNAME_CHANGE_LIMIT-Number((dynamic.user||user)?.usernameChangeCount||0));return appendRideRedirect(`Change your username with USERNAME newname when you still have a change available. You currently have ${n} username change${n===1?'':'s'} remaining.`);}
-  if(/\b(?:location)\b.*\b(?:change|update|edit|set)\b|\b(?:change|update|edit|set)\b.*\b(?:location)\b/i.test(l))return appendRideRedirect(`Change your default location with LOCATION followed by the area, for example LOCATION Juja. Your current default location is ${(dynamic.user||user)?.location || region.defaultCity}.`);
-  if(/\b(?:online|offline)\b.*\b(?:do|mean|work)\b|\bwhat does (?:online|offline)\b/i.test(l))return appendRideRedirect('ONLINE makes you available as a driver and can show actionable rides. OFFLINE removes your active driver availability.');
-  if(/\b(?:ride states|what does .*ride.*mean|what happens after|what happens when)\b/i.test(l))return appendRideRedirect(`OPEN means a ride can still be claimed. TAKEN means a driver accepted it. COMPLETED means the trip ended. CANCELLED means it was cancelled. EXPIRED means its request window ended before acceptance.`);
-  if(/\b(?:cancel|extend|end|complete)\b.*\b(?:ride|trip)\b/i.test(l))return appendRideRedirect('Use CANCEL RIDE 123 to cancel your own open ride, EXTEND RIDE 123 to extend it when eligible, and END RIDE to complete an accepted trip.');
-  if(/\b(?:rating|rate|ratings)\b/i.test(l))return appendRideRedirect('After a completed trip, Induu can ask participants for a 1–5 star rating, which contributes to the participant’s displayed average.');
+  if (/\b(?:who are you|what are you|what is induu|tell me about induu)\b/i.test(l)) return appendRideRedirect(INDUU_SELF_KNOWLEDGE.identity);
+  if (/\b(?:what can you do|what do you do|how do you work|your commands|commands)\b/i.test(l)) return appendRideRedirect(indUUHelpText());
+  if (/\b(?:profile|update .*profile|edit .*profile|change .*profile)\b/i.test(l)) return appendRideRedirect(`Use PROFILE to view your current profile. It shows your name, username, country, default location, rating, ride statistics and driver status. Use USERNAME newname to change your username when permitted, and LOCATION Juja to change your default location.`);
+  if (/\b(?:username)\b.*\b(?:change|update|edit|set)\b|\b(?:change|update|edit|set)\b.*\busername\b/i.test(l)) { const n = Math.max(0, USERNAME_CHANGE_LIMIT - Number((dynamic.user || user)?.usernameChangeCount || 0)); return appendRideRedirect(`Change your username with USERNAME newname when you still have a change available. You currently have ${n} username change${n === 1 ? '' : 's'} remaining.`); }
+  if (/\b(?:location)\b.*\b(?:change|update|edit|set)\b|\b(?:change|update|edit|set)\b.*\b(?:location)\b/i.test(l)) return appendRideRedirect(`Change your default location with LOCATION followed by the area, for example LOCATION Juja. Your current default location is ${(dynamic.user || user)?.location || region.defaultCity}.`);
+  if (/\b(?:online|offline)\b.*\b(?:do|mean|work)\b|\bwhat does (?:online|offline)\b/i.test(l)) return appendRideRedirect('ONLINE makes you available as a driver and can show actionable rides. OFFLINE removes your active driver availability.');
+  if (/\b(?:ride states|what does .*ride.*mean|what happens after|what happens when)\b/i.test(l)) return appendRideRedirect(`OPEN means a ride can still be claimed. TAKEN means a driver accepted it. COMPLETED means the trip ended. CANCELLED means it was cancelled. EXPIRED means its request window ended before acceptance.`);
+  if (/\b(?:cancel|extend|end|complete)\b.*\b(?:ride|trip)\b/i.test(l)) return appendRideRedirect('Use CANCEL RIDE 123 to cancel your own open ride, EXTEND RIDE 123 to extend it when eligible, and END RIDE to complete an accepted trip.');
+  if (/\b(?:rating|rate|ratings)\b/i.test(l)) return appendRideRedirect('After a completed trip, Induu can ask participants for a 1–5 star rating, which contributes to the participant’s displayed average.');
   return null;
 }
  
-async function answerGeneralQuestion(question,region,loc,user=null,phone=null){
-  const lower=String(question||'').toLowerCase().trim();
-  const greeting=getTimeGreeting(region.timezone);
-  if(!lower||lower.length<=2||/^\d+$/.test(lower))return null;
-  const self=await answerSelfQuestion(question,user,region,phone);
-  if(self)return self;
-  if(['thanks','thank you','thankyou','thx'].includes(lower))return "You're welcome! How can I assist you with a ride today?";
-  if(['ok','okay','cool','nice','great','alright'].includes(lower))return 'Got it! How can I assist you with a ride today?';
-  if(['hi','hey','hello','hii','heyy','yo'].includes(lower))return `${greeting}! I'm Induu — your ride-sharing assistant. I can also answer general questions. How can I assist you with a ride today?`;
-  if(!process.env.GROQ_API_KEY)return null;
-  try{
-    const dynamic=phone ? await getDynamicRideContext(phone,region,extractQuestionRideId(question)) : null;
-    const dynamicState=dynamic ? {
-      user:{username:dynamic.user?.username||null,location:dynamic.user?.location||null,isOnline:Boolean(dynamic.user?.isOnline && dynamic.user?.onlineUntil && new Date(dynamic.user.onlineUntil)>new Date()),rating:Number(dynamic.user?.rating||5),ratingCount:Number(dynamic.user?.ratingCount||0),ridesRequested:Number(dynamic.user?.ridesRequested||0),ridesOffered:Number(dynamic.user?.ridesOffered||0),ridesCompleted:Number(dynamic.user?.ridesCompleted||0)},
-      requestedRide:dynamic.requestedRide ? {id:dynamic.requestedRide.id,status:dynamicRideStateLabel(dynamic.requestedRide),from:dynamic.requestedRide.from,to:dynamic.requestedRide.to,date:dynamic.requestedRide.date,time:dynamic.requestedRide.time,seats:dynamic.requestedRide.seats,driverAssigned:Boolean(dynamic.requestedRide.driverPhone)} : null,
-      latestRide:dynamic.latestRide ? {id:dynamic.latestRide.id,status:dynamicRideStateLabel(dynamic.latestRide)} : null,
-      counts:dynamic.counts,
+async function answerGeneralQuestion(question, region, loc, user = null, phone = null) {
+  const lower = String(question || '').toLowerCase().trim();
+  const greeting = getTimeGreeting(region.timezone);
+  if (!lower || lower.length <= 2 || /^\d+$/.test(lower)) return null;
+  const self = await answerSelfQuestion(question, user, region, phone);
+  if (self) return self;
+  if (['thanks', 'thank you', 'thankyou', 'thx'].includes(lower)) return "You're welcome! How can I assist you with a ride today?";
+  if (['ok', 'okay', 'cool', 'nice', 'great', 'alright'].includes(lower)) return 'Got it! How can I assist you with a ride today?';
+  if (['hi', 'hey', 'hello', 'hii', 'heyy', 'yo'].includes(lower)) return `${greeting}! I'm Induu — your ride-sharing assistant. I can also answer general questions. How can I assist you with a ride today?`;
+  if (!process.env.GROQ_API_KEY) return null;
+  try {
+    const dynamic = phone ? await getDynamicRideContext(phone, region, extractQuestionRideId(question)) : null;
+    const dynamicState = dynamic ? {
+      user: { username: dynamic.user?.username || null, location: dynamic.user?.location || null, isOnline: Boolean(dynamic.user?.isOnline && dynamic.user?.onlineUntil && new Date(dynamic.user.onlineUntil) > new Date()), rating: Number(dynamic.user?.rating || 5), ratingCount: Number(dynamic.user?.ratingCount || 0), ridesRequested: Number(dynamic.user?.ridesRequested || 0), ridesOffered: Number(dynamic.user?.ridesOffered || 0), ridesCompleted: Number(dynamic.user?.ridesCompleted || 0) },
+      requestedRide: dynamic.requestedRide ? { id: dynamic.requestedRide.id, status: dynamicRideStateLabel(dynamic.requestedRide), from: dynamic.requestedRide.from, to: dynamic.requestedRide.to, date: dynamic.requestedRide.date, time: dynamic.requestedRide.time, seats: dynamic.requestedRide.seats, driverAssigned: Boolean(dynamic.requestedRide.driverPhone) } : null,
+      latestRide: dynamic.latestRide ? { id: dynamic.latestRide.id, status: dynamicRideStateLabel(dynamic.latestRide) } : null,
+      counts: dynamic.counts,
     } : null;
-    const system=['You are Induu, a highly capable general knowledge assistant embedded inside a student ride-sharing platform.',INDUU_SELF_KNOWLEDGE.identity,`Platform capabilities: ${INDUU_SELF_KNOWLEDGE.capabilities.join('; ')}.`,`Commands: ${JSON.stringify(INDUU_SELF_KNOWLEDGE.commands)}.`,`Ride states: ${JSON.stringify(INDUU_SELF_KNOWLEDGE.rideStates)}.`,`LIVE USER/DATABASE CONTEXT (use only when relevant; never expose private phone numbers): ${JSON.stringify(dynamicState)}.`,'Answer general knowledge accurately and naturally, like a concise encyclopedia. Explain science, technology, history, geography, language, everyday subjects and educational questions when asked.','For Induu questions involving the user’s rides, online state, profile, availability, acceptance, expiration, cancellation, completion or history, prefer the supplied LIVE USER/DATABASE CONTEXT over generic explanations. If the context does not contain the requested fact, say that it could not be verified rather than inventing it.','Do not invent current events, prices, bookings, driver matches, or database state. Do not pretend to have live web access.','If the user is asking to book, change, cancel, accept, extend, or complete a ride, let the ride-command workflow handle it.','Keep ordinary knowledge answers focused, normally 2-6 short sentences. End every ordinary general-knowledge answer with exactly: How can I assist you with a ride today?','No emojis unless requested.'].join(' ');
-    const response=await axios.post(GROQ_URL,{model:GROQ_MODEL,messages:[{role:'system',content:system},{role:'user',content:question}],temperature:0.15,max_tokens:500},{headers:{Authorization:`Bearer ${process.env.GROQ_API_KEY}`,'Content-Type':'application/json'},timeout:15000});
-    return normalizeKnowledgeReply(response.data?.choices?.[0]?.message?.content||'');
-  }catch(err){console.error('General AI error:',err?.message||err);return null;}
+    const system = ['You are Induu, a highly capable general knowledge assistant embedded inside a student ride-sharing platform.', INDUU_SELF_KNOWLEDGE.identity, `Platform capabilities: ${INDUU_SELF_KNOWLEDGE.capabilities.join('; ')}.`, `Commands: ${JSON.stringify(INDUU_SELF_KNOWLEDGE.commands)}.`, `Ride states: ${JSON.stringify(INDUU_SELF_KNOWLEDGE.rideStates)}.`, `LIVE USER/DATABASE CONTEXT (use only when relevant; never expose private phone numbers): ${JSON.stringify(dynamicState)}.`, 'Answer general knowledge accurately and naturally, like a concise encyclopedia. Explain science, technology, history, geography, language, everyday subjects and educational questions when asked.', 'For Induu questions involving the user’s rides, online state, profile, availability, acceptance, expiration, cancellation, completion or history, prefer the supplied LIVE USER/DATABASE CONTEXT over generic explanations. If the context does not contain the requested fact, say that it could not be verified rather than inventing it.', 'Do not invent current events, prices, bookings, driver matches, or database state. Do not pretend to have live web access.', 'If the user is asking to book, change, cancel, accept, extend, or complete a ride, let the ride-command workflow handle it.', 'Keep ordinary knowledge answers focused, normally 2-6 short sentences. End every ordinary general-knowledge answer with exactly: How can I assist you with a ride today?', 'No emojis unless requested.'].join(' ');
+    const response = await axios.post(GROQ_URL, { model: GROQ_MODEL, messages: [{ role: 'system', content: system }, { role: 'user', content: question }], temperature: 0.15, max_tokens: 500 }, { headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}`, 'Content-Type': 'application/json' }, timeout: 15000 });
+    return normalizeKnowledgeReply(response.data?.choices?.[0]?.message?.content || '');
+  } catch (err) { console.error('General AI error:', err?.message || err); return null; }
 }
  
 const SYSTEM_PROMPT = `You are Induu, an AI student ride-sharing assistant operating in {COUNTRY}. CURRENT LOCAL CONTEXT:- Local date: {TODAY_DATE}- Local time: {TODAY_INFO}- Draft: {CONTEXT_DRAFT} Return ONLY valid JSON with these keys:{  "role": "rider" | "driver" | "command" | "chat",  "command": "ONLINE" | "OFFLINE" | "SHOW_REQUESTS" | "TAKE" | "FILTER" | "CLEAR_FILTERS" | "NEXT" | "END_RIDE" | null,  "filter": string | null,  "takeId": number | null,  "from": string | null,  "to": string | null,  "date": string | null,  "time": string | null,  "seats": number | null} RULES:- Rider means the user needs/wants a ride.- Driver means the user is offering/driving a vehicle.- Preserve fields already present in the draft unless the user clearly changes them.- "need ride tomorrow" means rider + date tomorrow, even when no locations/time are supplied yet.- "tomorrow at 5pm", "tomorrow 5pm", "Friday at 9am" must preserve both date and time.- Understand today, tomorrow, day after tomorrow, this/next weekday, morning, afternoon, evening, tonight, now, ASAP.- "for 2 people", "2 passengers", "me plus 1" means seats.- A place name by itself can fill the missing location field in an active draft.- Never turn a general question into a ride request.- Never treat a rating such as "5" as a ride ID when a rating session is active.- Induu is primarily a ride-sharing assistant but can answer general knowledge questions.- Platform questions about PROFILE, USERNAME, LOCATION, ONLINE, OFFLINE, SHOW RIDES, TAKE/ACCEPT/CLAIM, MY RIDES, EXTEND, CANCEL RIDE, END RIDE, ratings, ride states, availability and chat should be classified as chat or the appropriate command, never as a new ride.- If the user asks a general knowledge question such as "what is a television", classify it as chat.- Do not invent platform capabilities or database state.`;
@@ -1177,7 +1180,6 @@ async function cancelRideForUser(phoneJid, phone, requestedId = null) {
 }
  
 async function changeUsername(phoneJid, phone, requestedUsername) {
-  const user = await User.getOrCreate(phone);
   const result = await User.changeUsernameSafely(phone, requestedUsername, USERNAME_CHANGE_LIMIT);
   if (!result.success) return sendGupshupMessage(phoneJid, `⚠️ ${result.message}`);
   return sendGupshupMessage(phoneJid, `✅ Username updated to @${result.user.username}.\nYou have no username changes remaining.`);
@@ -1234,14 +1236,12 @@ async function handleDirectCommand(cmd, phoneJid, userPhoneKey, normKey, region)
     case 'ONLINE': {
       const user = await User.getOrCreate(userPhoneKey);
       let filter = null;
-      let location = user.location || region.defaultCity;
  
       if (cmd.filter && cmd.filter.length > 1) {
         filter = cmd.filter.replace(/^in\s+/i, '').trim();
-        location = filter;
       }
  
-      await user.setOnline(location, DEFAULT_ONLINE_HOURS);
+      await user.setOnline(filter || user.location || region.defaultCity, DEFAULT_ONLINE_HOURS);
       user.filterFrom = filter;
       await user.save();
  
@@ -1835,173 +1835,119 @@ async function handleRideLogic(phoneJid, text, realPhone) {
   );
 }
 
-// Simple pure-JS QR code SVG generator to avoid external dependencies
-function generateQrSvg(text) {
-  const qr = require('qrcode-generator');
-  const qrCode = qr(0, 'M');
-  qrCode.addData(text);
-  qrCode.make();
-  const moduleCount = qrCode.getModuleCount();
-  const cellSize = 8;
-  const margin = 4;
-  const size = (moduleCount + margin * 2) * cellSize;
-  
-  let svg = `<svg xmlns="[http://www.w3.org/2000/svg](http://www.w3.org/2000/svg)" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">`;
-  svg += `<rect width="100%" height="100%" fill="#ffffff"/>`;
-  
-  for (let r = 0; r < moduleCount; r++) {
-    for (let c = 0; c < moduleCount; c++) {
-      if (qrCode.isDark(r, c)) {
-        const x = (c + margin) * cellSize;
-        const y = (r + margin) * cellSize;
-        svg += `<rect x="${x}" y="${y}" width="${cellSize}" height="${cellSize}" fill="#000000"/>`;
-      }
-    }
-  }
-  svg += `</svg>`;
-  return svg;
-}
+// ==========================================
+// WHATSAPP SOCKET & SERVER INITIALIZATION
+// ==========================================
  
-// WhatsApp Baileys Connection Setup using Render Persistent Disk Path
 async function startWhatsApp() {
   if (startingWhatsApp) return;
   startingWhatsApp = true;
-
+ 
   try {
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_PATH);
     const { version } = await fetchLatestBaileysVersion();
-
+ 
     sock = makeWASocket({
       version,
       auth: state,
-      logger: pino({ level: 'silent' }),
       printQRInTerminal: true,
+      logger: pino({ level: 'silent' }),
     });
-
+ 
     sock.ev.on('creds.update', saveCreds);
-
+ 
     sock.ev.on('connection.update', (update) => {
       const { connection, lastDisconnect, qr } = update;
+ 
       if (qr) {
         qrLast = qr;
-        console.log('QR Code received. Visit your app URL + /qr to scan it.');
+        console.log('New WhatsApp QR Code generated. Scan in terminal/logs.');
       }
+ 
       if (connection === 'close') {
-        const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-        console.log('WhatsApp connection closed. Reconnecting:', shouldReconnect);
-        sock = null;
-        if (shouldReconnect) {
+        const reason = lastDisconnect?.error?.output?.statusCode;
+        console.warn('WhatsApp connection closed, reason:', reason);
+ 
+        if (reason !== DisconnectReason.loggedOut) {
           clearTimeout(reconnectTimer);
           reconnectTimer = setTimeout(() => {
             startingWhatsApp = false;
             startWhatsApp();
           }, 5000);
+        } else {
+          console.error('WhatsApp session logged out. Clear auth_info to rescan.');
         }
       } else if (connection === 'open') {
-        console.log('WhatsApp connected successfully using stored disk credentials!');
         qrLast = null;
-        startingWhatsApp = false;
+        console.log('✅ WhatsApp connected successfully.');
       }
     });
-
+ 
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
       if (type !== 'notify') return;
+ 
       for (const msg of messages) {
         if (!msg.message || msg.key.fromMe) continue;
+ 
         const remoteJid = msg.key.remoteJid;
         if (!remoteJid || remoteJid.endsWith('@g.us')) continue;
-
+ 
+        const realPhone = msg.key.participant || msg.participant || remoteJid;
         const text =
           msg.message.conversation ||
           msg.message.extendedTextMessage?.text ||
           '';
-
+ 
         if (!text.trim()) continue;
-
-        const realPhone = normalizePhone(remoteJid);
-        await queueUserMessage(realPhone, async () => {
+ 
+        queueUserMessage(realPhone, async () => {
           await handleRideLogic(remoteJid, text, realPhone);
         });
       }
     });
   } catch (err) {
-    console.error('Failed to start WhatsApp:', err);
+    console.error('Failed to start WhatsApp socket:', err?.message || err);
+  } finally {
     startingWhatsApp = false;
-    setTimeout(() => {
-      startWhatsApp();
-    }, 10000);
   }
 }
-
-// Enhanced /qr route rendering a guaranteed server-generated SVG QR code
-app.get('/qr', (req, res) => {
-  if (!qrLast && sock?.user) {
-    return res.send(`
-      <html>
-        <body style="font-family: Arial, sans-serif; text-align: center; padding-top: 50px; background: #f4f7f6;">
-          <div style="background: white; display: inline-block; padding: 40px; border-radius: 10px; box-shadow: 0 4px 10px rgba(0,0,0,0.1);">
-            <h1 style="color: #2e7d32;">✅ WhatsApp Connected!</h1>
-            <p>Your session is active and linked successfully using your persistent disk path.</p>
-            <p style="color: #666;">No QR code needed.</p>
-          </div>
-        </body>
-      </html>
-    `);
-  }
-
-  if (!qrLast) {
-    return res.send(`
-      <html>
-        <head><meta http-equiv="refresh" content="5"></head>
-        <body style="font-family: Arial, sans-serif; text-align: center; padding-top: 50px; background: #f4f7f6;">
-          <div style="background: white; display: inline-block; padding: 40px; border-radius: 10px; box-shadow: 0 4px 10px rgba(0,0,0,0.1);">
-            <h2>⏳ Initializing WhatsApp...</h2>
-            <p>Generating QR code, this page will auto-refresh in 5 seconds...</p>
-            <button onclick="location.reload()" style="padding: 10px 20px; background: #075e54; color: white; border: none; border-radius: 5px; cursor: pointer;">Refresh Now</button>
-          </div>
-        </body>
-      </html>
-    `);
-  }
-
-  try {
-    const svgQr = generateQrSvg(qrLast);
-    res.send(`
-      <html>
-        <head><title>Link WhatsApp - Induu</title></head>
-        <body style="font-family: Arial, sans-serif; text-align: center; padding-top: 40px; background: #f4f7f6;">
-          <div style="background: white; display: inline-block; padding: 40px; border-radius: 10px; box-shadow: 0 4px 10px rgba(0,0,0,0.1);">
-            <h2 style="color: #075e54;">📱 Scan WhatsApp QR Code</h2>
-            <p>Open WhatsApp on your phone -> Linked Devices -> Link a Device -> Scan this code</p>
-            <div style="margin: 20px auto; display: inline-block; background: white; padding: 10px; border: 1px solid #ddd; border-radius: 6px;">
-              ${svgQr}
-            </div>
-            <p style="margin-top: 15px;"><button onclick="location.reload()" style="padding: 10px 20px; background: #075e54; color: white; border: none; border-radius: 5px; cursor: pointer;">Refresh QR</button></p>
-          </div>
-        </body>
-      </html>
-    `);
-  } catch (err) {
-    res.send(`<h1>Error generating QR</h1><p>${err.message}</p><pre>${qrLast}</pre>`);
-  }
-});
-
-app.get('/', (req, res) => {
-  res.send('Induu WhatsApp Bot server is running! Go to <a href="/qr">/qr</a> to view connection status.');
-});
-
-async function main() {
+ 
+async function startServer() {
   try {
     await initDatabase();
-    console.log('Database initialized successfully.');
+    console.log('✅ Database initialized successfully.');
+ 
+    if (process.env.INDUU_SELF_TEST === 'true') {
+      const summary = runSelfTests();
+      console.log(`🧪 INDUU Self-Test Complete: ${summary.passed} passed, ${summary.failed} failed.`);
+      if (summary.failed > 0) {
+        console.error('Self-test failures:', summary.failures);
+      }
+    }
+ 
+    setInterval(async () => {
+      try {
+        await cleanupDatabase(RIDE_REQUEST_TTL_MINUTES);
+      } catch (err) {
+        console.error('Database maintenance error:', err?.message || err);
+      }
+ 
+      const cutoff = Date.now() - SESSION_TTL_MS;
+      for (const [key, session] of userSessions.entries()) {
+        if (session.updatedAt && session.updatedAt < cutoff) {
+          userSessions.delete(key);
+        }
+      }
+    }, MAINTENANCE_INTERVAL_MS);
+ 
+    app.listen(PORT, () => {
+      console.log(`🚀 INDUU Production Engine listening on port ${PORT}`);
+      startWhatsApp();
+    });
   } catch (err) {
-    console.error('Database initialization error:', err);
+    console.error('Server startup error:', err?.stack || err?.message || err);
+    process.exit(1);
   }
-
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Induu server running on port ${PORT}`);
-    startWhatsApp();
-  });
 }
-
-main();
+ 
+startServer();
