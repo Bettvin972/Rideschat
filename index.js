@@ -829,24 +829,20 @@ const INDUU_SELF_KNOWLEDGE = {
   commands: {HELP:'Shows help.',PROFILE:'Shows the profile.',MY_RIDES:'Shows recent rides.',ONLINE:'Makes a driver available and can filter by area.',OFFLINE:'Marks a driver offline.','SHOW RIDES':'Shows actionable open rides.',TAKE:'Accepts an open ride, e.g. TAKE 123.',USERNAME:'Changes username when permitted.',LOCATION:'Changes default location.',EXTEND:'Extends an eligible open ride.', 'CANCEL RIDE':'Cancels the rider’s open request.','END RIDE':'Completes an accepted ride.',NEXT:'Next ride-list page.',BACK:'Previous ride-list page.',CLEAR:'Clears a ride-area filter.'},
   rideStates: {OPEN:'Available to eligible drivers while its request window is active.',TAKEN:'Accepted by a driver; rider and driver are connected.',COMPLETED:'Trip completed.',CANCELLED:'Cancelled by the rider.',EXPIRED:'Request window ended before acceptance.'}
 };
-
 function indUUHelpText() {
   return ['*INDUU — WHAT I CAN DO*', '', 'I am primarily your ride assistant, but I can also answer general questions.', '', '*Rides*', '• Need a ride: "Need a ride from Juja to Nairobi tomorrow at 8am"', '• Driver mode: "I am driving Juja to Nairobi"', '• See rides: SHOW RIDES', '• Driver availability: ONLINE / OFFLINE', '• Accept: TAKE 123, ACCEPT 123, CLAIM 123, or reply 123 when a ride is offered', '', '*Account*', '• PROFILE — view your profile', '• MY RIDES — view recent rides', '• USERNAME newname — update username when permitted', '• LOCATION Juja — update your default location', '', '*Ride management*', '• EXTEND RIDE 123', '• CANCEL RIDE 123', '• END RIDE', '', 'Ask me "How do I update my profile?", "Why can’t I accept a ride?", or "What does ONLINE do?" and I can explain.'].join('\n');
 }
-
 function appendRideRedirect(text) {
   const r = String(text || '').trim();
   if (!r) return '';
   return /assist you with a ride|ride today/i.test(r) ? r : `${r}\n\nHow can I assist you with a ride today?`;
 }
-
 function normalizeKnowledgeReply(text) {
   let r = String(text || '').trim().replace(/^Induu:\s*/i, '').trim();
   if (!r) return '';
   if (r.length > 1800) r = `${r.slice(0, 1770).trim()}...`;
   return appendRideRedirect(r);
 }
-
 function isInduuSelfQuestion(text) {
   const l = String(text || '').toLowerCase().trim();
   return /\b(?:who are you|what are you|what can you do|what do you do|how do you work|how does induu work|what is induu|tell me about induu|your commands|commands|help me|update .*profile|edit .*profile|change .*profile|change .*username|update .*username|change .*location|update .*location|what does online do|what does offline do|how do i accept|how can i accept|why can.?t i accept|why is .* ride .* unavailable|what do .* ride .* mean|ride status|ride states|what happens after .*accept|how do ratings work|how do i rate|how do i cancel .*ride|how do i extend .*ride|how do i end .*ride|how do i complete .*ride|why was .* ride .* expired|what happened to .* ride|where is my ride|is my ride|my ride .* status|why am i offline|am i online)\b/i.test(l);
@@ -1839,28 +1835,115 @@ async function handleRideLogic(phoneJid, text, realPhone) {
 // WHATSAPP SOCKET & SERVER INITIALIZATION
 // ==========================================
  
-// Browser QR endpoint to view scannable QR code easily on Render
-app.get('/qr', async (req, res) => {
+app.get('/qr', (req, res) => {
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
   if (!qrLast) {
-    return res.send(`
-      <div style="text-align: center; margin-top: 50px; font-family: sans-serif;">
-        <h2>No QR Code available right now or already connected!</h2>
-        <p>If your session is already paired, your bot is ready. If not, check your logs for generation or restart the service.</p>
-      </div>
+    return res.status(200).send(`
+      <!doctype html>
+      <html>
+        <head>
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <title>Induu WhatsApp QR</title>
+        </head>
+        <body style="font-family:Arial,sans-serif;text-align:center;padding:40px">
+          <h2>No active WhatsApp QR code</h2>
+          <p>The bot may already be connected, or Baileys has not emitted a QR yet.</p>
+          <p>Refresh this page after restarting the Render service if you are pairing a new number.</p>
+        </body>
+      </html>
     `);
   }
-  try {
-    const qrImageUrl = `[https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=$](https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=$){encodeURIComponent(qrLast)}`;
-    res.send(`
-      <div style="text-align: center; margin-top: 50px; font-family: sans-serif;">
-        <h2>Scan this QR Code with WhatsApp</h2>
-        <img src="${qrImageUrl}" alt="WhatsApp QR Code" style="width: 300px; height: 300px; border: 1px solid #ccc; padding: 10px;" />
-        <p>Refresh this page if the code expires.</p>
-      </div>
-    `);
-  } catch (err) {
-    res.send(`Raw QR string: ${qrLast}`);
-  }
+  const qrPayload = JSON.stringify(String(qrLast)).replace(/</g, '\\u003c');
+  return res.send(`
+    <!doctype html>
+    <html>
+      <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>Induu WhatsApp QR</title>
+        <style>
+          body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            background: #f5f7fa;
+            padding: 30px 15px;
+          }
+          .card {
+            max-width: 430px;
+            margin: 0 auto;
+            background: white;
+            padding: 24px;
+            border-radius: 16px;
+            box-shadow: 0 4px 20px rgba(0,0,0,.10);
+          }
+          canvas {
+            width: 320px;
+            height: 320px;
+            max-width: 90vw;
+            border: 8px solid white;
+            margin: 15px auto;
+          }
+          .small {
+            color: #666;
+            font-size: 14px;
+          }
+          button {
+            padding: 10px 18px;
+            border: 0;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 15px;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="card">
+          <h2>Scan with WhatsApp</h2>
+          <p>Open WhatsApp → Linked devices → Link a device.</p>
+          <canvas id="qr"></canvas>
+          <p class="small">This QR expires quickly. Refresh if WhatsApp rejects it.</p>
+          <button onclick="location.reload()">Refresh QR</button>
+        </div>
+        <script src="[https://cdn.jsdelivr.net/npm/qrcode@1.5.4/build/qrcode.min.js](https://cdn.jsdelivr.net/npm/qrcode@1.5.4/build/qrcode.min.js)"></script>
+        <script>
+          const qrPayload = ${qrPayload};
+          if (!qrPayload) {
+            document.body.innerHTML = '<h2>QR payload unavailable. Refresh the page.</h2>';
+          } else if (window.QRCode) {
+            QRCode.toCanvas(
+              document.getElementById('qr'),
+              qrPayload,
+              {
+                width: 320,
+                margin: 2,
+                errorCorrectionLevel: 'M'
+              },
+              function (error) {
+                if (error) {
+                  console.error(error);
+                  document.body.innerHTML =
+                    '<h2>Could not render QR</h2><p>Refresh the page to obtain a new WhatsApp QR.</p>';
+                }
+              }
+            );
+          } else {
+            document.body.innerHTML =
+              '<h2>QR renderer failed to load</h2><p>Check the browser connection and refresh.</p>';
+          }
+        </script>
+      </body>
+    </html>
+  `);
+});
+
+app.get('/qr/status', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json({
+    qrAvailable: Boolean(qrLast),
+    connected: Boolean(sock?.user),
+    timestamp: new Date().toISOString()
+  });
 });
 
 async function startWhatsApp() {
