@@ -25,7 +25,10 @@ app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true }));
  
 const PORT = Number(process.env.PORT || 10000);
-const AUTH_PATH = path.join(__dirname, 'auth_info');
+
+// Use Render's mounted disk directory if specified, otherwise fall back to local auth_info folder
+const AUTH_PATH = process.env.RENDER_DISK_PATH || path.join(__dirname, 'auth_info');
+
 const PAGE_SIZE = 20;
 const DEFAULT_ONLINE_HOURS = 2;
 const DEFAULT_TIMEZONE = 'America/Chicago';
@@ -2267,7 +2270,7 @@ function qaTestExpiryRules() {
   qaAssert('taken request hidden', !isRideCurrentlyActionable({ ...future, status: 'TAKEN' }));
 }
 
-// WhatsApp Baileys Connection Setup
+// WhatsApp Baileys Connection Setup using Render Persistent Disk Path
 async function startWhatsApp() {
   if (startingWhatsApp) return;
   startingWhatsApp = true;
@@ -2289,7 +2292,7 @@ async function startWhatsApp() {
       const { connection, lastDisconnect, qr } = update;
       if (qr) {
         qrLast = qr;
-        console.log('QR Code received, scan it with WhatsApp if running locally.');
+        console.log('QR Code received, scan it with WhatsApp if running locally or view via /qr route.');
       }
       if (connection === 'close') {
         const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
@@ -2303,7 +2306,7 @@ async function startWhatsApp() {
           }, 5000);
         }
       } else if (connection === 'open') {
-        console.log('WhatsApp connection opened successfully!');
+        console.log('WhatsApp connection opened successfully using disk path session credentials!');
         startingWhatsApp = false;
       }
     });
@@ -2337,9 +2340,9 @@ async function startWhatsApp() {
   }
 }
 
-// HTTP route to view the WhatsApp QR code status
+// HTTP route to view the WhatsApp QR code status if not authenticated
 app.get('/qr', (req, res) => {
-  if (!qrLast) return res.send('No QR code generated yet or already connected.');
+  if (!qrLast) return res.send('No QR code generated yet or session already authenticated via disk storage.');
   res.send(`<h1>WhatsApp QR Code</h1><p>Scan this string or check terminal logs:</p><pre>${qrLast}</pre>`);
 });
 
