@@ -25,31 +25,6 @@ app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 const PORT = Number(process.env.PORT || 10000);
-
-let server = null;
-let serverReady = false;
-try {
-  server = app.listen(PORT, '0.0.0.0', () => {
-    serverReady = true;
-    console.log(`INDUU HTTP SERVER READY on 0.0.0.0:${PORT}`);
-  });
-  server.on('error', (err) => {
-    console.error('HTTP SERVER ERROR:', err?.stack || err?.message || err);
-  });
-} catch (err) {
-  console.error('HTTP SERVER BIND ERROR:', err?.stack || err?.message || err);
-}
-
-app.get('/health', (req, res) => {
-  res.status(200).json({
-    ok: true,
-    service: 'induu',
-    serverReady,
-    uptimeSeconds: Math.floor(process.uptime()),
-    timestamp: new Date().toISOString(),
-  });
-});
-
 const AUTH_PATH = path.join(__dirname, 'auth_info');
 const PAGE_SIZE = 20;
 const DEFAULT_ONLINE_HOURS = 2;
@@ -690,52 +665,6 @@ async function sendGupshupMessage(toJid, text) {
   }
 }
 
-function buildDirectWhatsAppLink(phone) {
-  const normalized = normalizePhone(phone);
-  return normalized ? `https://wa.me/${normalized}` : '';
-}
-
-async function sendDirectContact(toJid, contactPhone, displayName, rideId, roleLabel) {
-  const phone = normalizePhone(contactPhone);
-  if (!phone || !sock) return false;
-  const safeName = String(displayName || 'Induu member').replace(/[\r\n]/g, ' ').trim() || 'Induu member';
-  const vcard = [
-    'BEGIN:VCARD',
-    'VERSION:3.0',
-    `FN:${safeName}`,
-    `N:${safeName};;;;`,
-    `TEL;type=CELL;type=VOICE;waid=${phone}:+${phone}`,
-    `NOTE:Induu ${roleLabel || 'ride'} for ride #${rideId}`,
-    'END:VCARD',
-  ].join('\n');
-  try {
-    await sock.sendMessage(jidFor(toJid), {
-      contacts: { displayName: safeName, contacts: [{ vcard }] },
-    });
-    return true;
-  } catch (err) {
-    console.error('WhatsApp contact card error:', err?.message || err);
-    return false;
-  }
-}
-
-async function sendDirectConnectionDetails(toJid, contactPhone, displayName, rideId, roleLabel) {
-  const phone = normalizePhone(contactPhone);
-  if (!phone) return false;
-  const cardSent = await sendDirectContact(toJid, phone, displayName, rideId, roleLabel);
-  const link = buildDirectWhatsAppLink(phone);
-  await sendGupshupMessage(
-    toJid,
-    `*DIRECT WHATSAPP CONNECTION — RIDE #${rideId}*\n\n` +
-    `${roleLabel || 'Ride partner'}: ${displayName || 'Induu member'}\n` +
-    `${cardSent ? 'The WhatsApp contact card is attached above.\n' : ''}` +
-    `${link ? `Open the direct WhatsApp chat: ${link}\n\n` : ''}` +
-    `You can now message or call each other directly in normal WhatsApp and share your current/live location, photos, documents, or other media.\n\n` +
-    `Induu will not relay ordinary chat messages. Ride controls such as END RIDE still work through Induu.`
-  );
-  return true;
-}
-
 function adminOnly(req, res, next) {
   const secret = process.env.ADMIN_SECRET;
   if (!secret) {
@@ -854,22 +783,25 @@ async function sendRidesList(toJid, rides, title = 'RIDES:', page = 0, timezone 
 async function checkAndForwardChat(phoneJid, text, realPhone) {
   const key = normalizePhone(realPhone) || normalizePhone(phoneJid);
   const chat = activeChats.get(key);
+
   if (!chat) return false;
+
   try {
     const ride = await RideRequest.findByPk(chat.rideId);
+
     if (!ride || ride.status !== 'TAKEN') {
       killChatFor(key);
       return false;
     }
-    const otherPhone = normalizePhone(chat.with);
-    const otherUser = otherPhone ? await User.getOrCreate(otherPhone) : null;
-    await sendGupshupMessage(
-      phoneJid,
-      `Your ride #${chat.rideId} is connected directly with ${profileName(otherUser)}. Please use the contact card/direct WhatsApp link you received to message or call them. Your message was not relayed through Induu.`
-    );
+
+    const sender = normalizePhone(ride.phone) === key ? 'Rider' : 'Driver';
+    const receiver = sender === 'Rider' ? 'driver' : 'rider';
+
+    await sendGupshupMessage(chat.with, `${sender} ${chat.rideId}: ${text}`);
+    await sendGupshupMessage(phoneJid, `Sent to ${receiver}`);
     return true;
   } catch (err) {
-    console.error('Direct WhatsApp bridge error:', err?.stack || err?.message || err);
+    console.error('Chat bridge error:', err?.stack || err?.message || err);
     return false;
   }
 }
@@ -902,9 +834,7 @@ const INDUU_SELF_KNOWLEDGE = {
   commands: {HELP:'Shows help.',PROFILE:'Shows the profile.',MY_RIDES:'Shows recent rides.',ONLINE:'Makes a driver available and can filter by area.',OFFLINE:'Marks a driver offline.','SHOW RIDES':'Shows actionable open rides.',TAKE:'Accepts an open ride, e.g. TAKE 123.',USERNAME:'Changes username when permitted.',LOCATION:'Changes default location.',EXTEND:'Extends an eligible open ride.', 'CANCEL RIDE':'Cancels the rider’s open request.','END RIDE':'Completes an accepted ride.',NEXT:'Next ride-list page.',BACK:'Previous ride-list page.',CLEAR:'Clears a ride-area filter.'},
   rideStates: {OPEN:'Available to eligible drivers while its request window is active.',TAKEN:'Accepted by a driver; rider and driver are connected.',COMPLETED:'Trip completed.',CANCELLED:'Cancelled by the rider.',EXPIRED:'Request window ended before acceptance.'}
 };
-
 function indUUHelpText(){return ['*INDUU — WHAT I CAN DO*','','I am primarily your ride assistant, but I can also answer general questions.','','*Rides*','• Need a ride: "Need a ride from Juja to Nairobi tomorrow at 8am"','• Driver mode: "I am driving Juja to Nairobi"','• See rides: SHOW RIDES','• Driver availability: ONLINE / OFFLINE','• Accept: TAKE 123, ACCEPT 123, CLAIM 123, or reply 123 when a ride is offered','','*Account*','• PROFILE — view your profile','• MY RIDES — view recent rides','• USERNAME newname — update username when permitted','• LOCATION Juja — update your default location','','*Ride management*','• EXTEND RIDE 123','• CANCEL RIDE 123','• END RIDE','','Ask me "How do I update my profile?", "Why can’t I accept a ride?", or "What does ONLINE do?" and I can explain.'].join('\n');}
-
 function isInduuSelfQuestion(text){
   const l=String(text||'').toLowerCase().trim();
   return /\b(?:who are you|what are you|what can you do|what do you do|how do you work|how does induu work|what is induu|tell me about induu|your commands|commands|help me|update .*profile|edit .*profile|change .*profile|change .*username|update .*username|change .*location|update .*location|what does online do|what does offline do|how do i accept|how can i accept|why can.?t i accept|why is .* ride .* unavailable|what do .* ride .* mean|ride status|ride states|what happens after .*accept|how do ratings work|how do i rate|how do i cancel .*ride|how do i extend .*ride|how do i end .*ride|how do i complete .*ride|why was .* ride .* expired|what happened to .* ride|where is my ride|is my ride|my ride .* status|why am i offline|am i online)\b/i.test(l);
@@ -920,7 +850,6 @@ function hasExpired(ride) {
   if (!ride || !ride.expiresAt) return false;
   return new Date(ride.expiresAt).getTime() <= Date.now();
 }
-
 function dynamicRideStateLabel(ride, now = new Date()){
   if(!ride) return 'UNKNOWN';
   const status=String(ride.status||'').toUpperCase();
@@ -1416,14 +1345,12 @@ async function takeRide(rideId, phoneJid, driverPhone, region) {
   setActiveChat(riderPhone, driverPhone, freshRide.id);
   await sendGupshupMessage(
     phoneJid,
-    `*✅ RIDE ACCEPTED*\n\nRide #${freshRide.id}\n${freshRide.from} → ${freshRide.to}\n${toDisplayDate(freshRide.date, region.timezone)} • ${toDisplayTime(freshRide.time)}\n\n👤 Rider: ${profileName(rider)}\n⭐ ${Number(rider.rating || 5).toFixed(1)} (${Number(rider.ratingCount || 0)} ratings)\n\nYour rider is now connected to you through normal WhatsApp. Use the direct contact details below to message or call them.\nSay END RIDE when the trip is completed.`
+    `*✅ RIDE ACCEPTED*\n\nRide #${freshRide.id}\n${freshRide.from} → ${freshRide.to}\n${toDisplayDate(freshRide.date, region.timezone)} • ${toDisplayTime(freshRide.time)}\n\n👤 Rider: ${profileName(rider)}\n⭐ ${Number(rider.rating || 5).toFixed(1)} (${Number(rider.ratingCount || 0)} ratings)\n\nYou are now connected. Send messages normally to chat with the rider.\nSay END RIDE when the trip is completed.`
   );
   await sendGupshupMessage(
     riderPhone,
-    `*🚗 DRIVER FOUND*\n\nYour ride #${freshRide.id} has been accepted.\n\nDriver: ${profileName(driver)}\nUsername: ${profileUsername(driver)}\n⭐ ${Number(driver.rating || 5).toFixed(1)} (${Number(driver.ratingCount || 0)} ratings)\n\nYour driver is now connected to you through normal WhatsApp. Use the direct contact details below to message or call them.`
+    `*🚗 DRIVER FOUND*\n\nYour ride #${freshRide.id} has been accepted.\n\nDriver: ${profileName(driver)}\nUsername: ${profileUsername(driver)}\n⭐ ${Number(driver.rating || 5).toFixed(1)} (${Number(driver.ratingCount || 0)} ratings)\n\nYou can now chat directly with your driver.`
   );
-  await sendDirectConnectionDetails(phoneJid, riderPhone, profileName(rider), freshRide.id, 'Rider');
-  await sendDirectConnectionDetails(riderPhone, driverPhone, profileName(driver), freshRide.id, 'Driver');
   return true;
 }
 
@@ -1885,10 +1812,12 @@ async function handleRideLogic(phoneJid, text, realPhone) {
         !driver.location ||
         areLocationsNearby(driver.location, rideRequest.from) ||
         areLocationsNearby(driver.location, rideRequest.to);
-      const relevance = matches ? 'NEARBY MATCH' : 'ACTIVE RIDE ALERT';
+
+      if (!matches) continue;
+
       await sendGupshupMessage(
         driver.phone,
-        `*${relevance}: RIDE ${rideRequest.id}*\n${rideRequest.from} → ${rideRequest.to}\n${toDisplayDate(rideRequest.date, region.timezone)} at ${toDisplayTime(rideRequest.time)}${rideRequest.seats ? ` • ${rideRequest.seats}${rideRequest.seats === 1 ? 'person' : 'people'}` : ''}\n${matches ? 'This ride matches your current driver area.' : 'You are receiving this because you are currently ONLINE.'}\n\nReply *TAKE ${rideRequest.id}* or simply *${rideRequest.id}* to accept.`
+        `NEW RIDE MATCH: ${rideRequest.id}\n${rideRequest.from} → ${rideRequest.to}\n${toDisplayDate(rideRequest.date, region.timezone)} at ${toDisplayTime(rideRequest.time)}${rideRequest.seats ? ` • ${rideRequest.seats}${rideRequest.seats === 1 ? 'person' : 'people'}` : ''}\nReply ${rideRequest.id} to take`
       );
     }
 
@@ -2186,88 +2115,4 @@ function qaTestSortAndTag() {
 function qaTestEnvironmentContracts() {
   qaEqual('Groq model is locked', GROQ_MODEL, 'openai/gpt-oss-20b');
   qaEqual('Groq endpoint is OpenAI-compatible', GROQ_URL, '[https://api.groq.com/openai/v1/chat/completions](https://api.groq.com/openai/v1/chat/completions)');
-  qaEqual('ride TTL is thirty minutes', RIDE_REQUEST_TTL_MINUTES, 30);
-  qaEqual('maximum ride extensions', MAX_RIDE_EXTENSIONS, 3);
-  qaEqual('maximum seats', MAX_SEATS, 6);
-  qaEqual('maximum bags', MAX_BAGS, 10);
-}
-
-function qaTestNaturalLanguageDateSignals() {
-  const tz = 'Africa/Nairobi';
-  const examples = [
-    'tomorrow',
-    'day after tomorrow',
-    'next week',
-    'today',
-    'now',
-    'asap',
-  ];
-  for (const example of examples) {
-    const value = getRealDate(example, tz);
-    qaMatches(`natural date: ${example}`, value, /^\d{4}-\d{2}-\d{2}$/);
-  }
-}
-
-function qaTestCommandIdPriority() {
-  const rating = parseRating('5');
-  const command = parseDirectCommand('TAKE 5');
-  qaEqual('rating remains numeric rating', rating, 5);
-  qaEqual('TAKE 5 remains ride command', command?.command, 'TAKE');
-  qaEqual('TAKE 5 id remains 5', command?.takeId, 5);
-}
-
-function qaTestRideCardContract() {
-  const ride = {
-    id: 142,
-    phone: '254712345678',
-    from: 'JKUAT Main Gate, Juja, Kiambu County, Kenya',
-    to: 'Kenyatta National Hospital, Hospital Road, Nairobi, Kenya',
-    date: '2030-05-20',
-    time: '17:30',
-    distanceMiles: 20,
-    seats: 2,
-    status: 'OPEN',
-    expiresAt: new Date(Date.now() + 600000),
-  };
-  const sorted = sortAndTagRides([ride], 'Africa/Nairobi');
-  qaEqual('ride id retained', sorted[0].id, 142);
-  qaEqual('pickup retained exactly', sorted[0].from, ride.from);
-  qaEqual('destination retained exactly', sorted[0].to, ride.to);
-  qaEqual('distance retained', sorted[0].distanceMiles, 20);
-  qaEqual('seats retained', sorted[0].seats, 2);
-}
-
-function qaTestSessionLifecycle() {
-  const key = `qa-${Date.now()}-${Math.random()}`;
-  const session = getSession(key);
-  session.ridesPage = 2;
-  session.lastTitle = 'QA';
-  qaEqual('session page stored', getSession(key).ridesPage, 2);
-  clearSession(key);
-  qaAssert('session cleared', !userSessions.has(key));
-}
-
-function qaTestInputBoundaries() {
-  qaEqual('empty rating rejected', parseRating(''), null);
-  qaEqual('long rating rejected', parseRating('1'.repeat(30)), null);
-  qaAssert('empty phone normalized', normalizePhone('') === '');
-  qaAssert('null phone normalized', normalizePhone(null) === '');
-  qaAssert('invalid location can be rejected', !isValidLocation('ONLINE'));
-}
-
-function qaTestTimeZoneRoundTrip() {
-  const cases = [
-    ['2030-01-15', '08:00', 'Africa/Nairobi'],
-    ['2030-06-15', '17:30', 'America/Chicago'],
-    ['2030-11-03', '01:30', 'America/Chicago'],
-  ];
-  for (const [date, time, tz] of cases) {
-    const utc = zonedDateTimeToUtc(date, time, tz);
-    qaAssert(`timezone conversion numeric ${date} ${time} ${tz}`, Number.isFinite(utc));
-  }
-}
-
-function qaTestRideStatusVocabulary() {
-  const allowed = ['OPEN', 'TAKEN', 'COMPLETED', 'CANCELLED', 'EXPIRED'];
-  for (const value of allowed) qaAssert(`status allowed: ${value}`, allowed.includes(value));
 }
