@@ -1834,11 +1834,35 @@ async function handleRideLogic(phoneJid, text, realPhone) {
     reply || "Hello! I'm Induu — matching riders and drivers in seconds. Just text me your trip."
   );
 }
-
+ 
 // ==========================================
 // WHATSAPP SOCKET & SERVER INITIALIZATION
 // ==========================================
  
+// Browser QR endpoint to view scannable QR code easily on Render
+app.get('/qr', async (req, res) => {
+  if (!qrLast) {
+    return res.send(`
+      <div style="text-align: center; margin-top: 50px; font-family: sans-serif;">
+        <h2>No QR Code available right now or already connected!</h2>
+        <p>If your session is already paired, your bot is ready. If not, check your logs for generation or restart the service.</p>
+      </div>
+    `);
+  }
+  try {
+    const qrImageUrl = `[https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=$](https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=$){encodeURIComponent(qrLast)}`;
+    res.send(`
+      <div style="text-align: center; margin-top: 50px; font-family: sans-serif;">
+        <h2>Scan this QR Code with WhatsApp</h2>
+        <img src="${qrImageUrl}" alt="WhatsApp QR Code" style="width: 300px; height: 300px; border: 1px solid #ccc; padding: 10px;" />
+        <p>Refresh this page if the code expires.</p>
+      </div>
+    `);
+  } catch (err) {
+    res.send(`Raw QR string: ${qrLast}`);
+  }
+});
+
 async function startWhatsApp() {
   if (startingWhatsApp) return;
   startingWhatsApp = true;
@@ -1861,7 +1885,7 @@ async function startWhatsApp() {
  
       if (qr) {
         qrLast = qr;
-        console.log('New WhatsApp QR Code generated. Scan in terminal/logs.');
+        console.log('New WhatsApp QR Code generated. View it in browser at /qr');
       }
  
       if (connection === 'close') {
