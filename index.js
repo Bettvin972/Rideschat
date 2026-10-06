@@ -1,5 +1,3 @@
-The "Application exited early" error happens because your Express server never binds to a port or starts listening. To fix this, you need to add app.listen(PORT, '0.0.0.0', ...) at the very bottom of your script so Render knows the application is running successfully.
-Here is the fully corrected, ready-to-paste code with the missing server listener appended at the end:
 require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
@@ -2268,10 +2266,6 @@ function qaTestExpiryRules() {
   qaAssert('taken request hidden', !isRideCurrentlyActionable({ ...future, status: 'TAKEN' }));
 }
 
-// ---------------------------------------------------------
-// FIX APPLIED HERE: Added app.listen so Render doesn't exit early
-// ---------------------------------------------------------
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Induu server running on port ${PORT}`);
 });
-
