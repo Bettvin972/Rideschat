@@ -834,7 +834,7 @@ function killChatFor(phone) {
 const INDUU_SELF_KNOWLEDGE = {
   identity: 'Induu is a student-focused ride-sharing assistant. Its primary job is to help riders request rides, help drivers discover and accept rides, manage ride status, and guide users through profiles and account features. It can also answer general knowledge questions, but ride assistance is its main purpose.',
   capabilities: ['request rides in natural language','understand dates, times and passenger counts','create and track ride requests','show rides to drivers','ONLINE/OFFLINE driver availability','ride filtering and pagination','ride acceptance','profile and ride history','username and default-location updates','ride extension and cancellation','trip completion','rider/driver chat','ratings','ride-state/error explanations','general knowledge answers'],
-  commands: {HELP:'Shows help.',PROFILE:'Shows the profile.',MY_RIDES:'Shows recent rides.',ONLINE:'Makes a driver available and can filter by area.',OFFLINE:'Marks a driver offline.','SHOW RIDES':'Shows actionable open rides.',TAKE:'Accepts an open ride, e.g. TAKE 123.',USERNAME:'Changes username when permitted.',LOCATION:'Changes default location.',EXTEND:'Extends an eligible open ride.', 'CANCEL RIDE':'Cancels the rider’s open request.','END RIDE':'Completes an accepted ride.',NEXT:'Next ride-list page.',BACK:'Previous ride-list page.',CLEAR:'Clears a ride-area filter.'},
+  commands: {HELP:'Shows help.',PROFILE:'Shows the profile.',MY_RIDES:'Shows recent rides.',ONLINE:'Makes a driver available and can filter by area.',OFFLINE:'Marks a driver offline.','SHOW RIDES':'Shows actionable open rides.',TAKE:'Accepts an open ride, e.g. TAKE 123.',USERNAME:'Changes username when permitted.',LOCATION:'Changes default location.',EXTEND:'Ends or extends an eligible open ride.', 'CANCEL RIDE':'Cancels the rider’s open request.','END RIDE':'Completes an accepted ride.',NEXT:'Next ride-list page.',BACK:'Previous ride-list page.',CLEAR:'Clears a ride-area filter.'},
   rideStates: {OPEN:'Available to eligible drivers while its request window is active.',TAKEN:'Accepted by a driver; rider and driver are connected.',COMPLETED:'Trip completed.',CANCELLED:'Cancelled by the rider.',EXPIRED:'Request window ended before acceptance.'}
 };
 function indUUHelpText(){return ['*INDUU — WHAT I CAN DO*','','I am primarily your ride assistant, but I can also answer general questions.','','*Rides*','• Need a ride: "Need a ride from Juja to Nairobi tomorrow at 8am"','• Driver mode: "I am driving Juja to Nairobi"','• See rides: SHOW RIDES','• Driver availability: ONLINE / OFFLINE','• Accept: TAKE 123, ACCEPT 123, CLAIM 123, or reply 123 when a ride is offered','','*Account*','• PROFILE — view your profile','• MY RIDES — view recent rides','• USERNAME newname — update username when permitted','• LOCATION Juja — update your default location','','*Ride management*','• EXTEND RIDE 123','• CANCEL RIDE 123','• END RIDE','','Ask me "How do I update my profile?", "Why can’t I accept a ride?", or "What does ONLINE do?" and I can explain.'].join('\n');}
@@ -2292,7 +2292,7 @@ async function startWhatsApp() {
       const { connection, lastDisconnect, qr } = update;
       if (qr) {
         qrLast = qr;
-        console.log('QR Code received. If this persists, ensure RENDER_DISK_PATH environment variable matches your Render disk mount path.');
+        console.log('QR Code received. Visit your app URL + /qr to scan it.');
       }
       if (connection === 'close') {
         const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
@@ -2341,19 +2341,63 @@ async function startWhatsApp() {
   }
 }
 
-// HTTP route to check connection and QR status
+// Enhanced /qr route rendering a clickable QR code page using qrcodejs browser library
 app.get('/qr', (req, res) => {
-  if (!qrLast) {
+  if (!qrLast && sock?.user) {
     return res.send(`
-      <h1>WhatsApp Status: Connected</h1>
-      <p>Your session is active and linked successfully using the disk directory path (${AUTH_PATH}). No QR code needed!</p>
+      <html>
+        <body style="font-family: Arial, sans-serif; text-align: center; padding-top: 50px; background: #f4f7f6;">
+          <div style="background: white; display: inline-block; padding: 40px; border-radius: 10px; box-shadow: 0 4px 10px rgba(0,0,0,0.1);">
+            <h1 style="color: #2e7d32;">✅ WhatsApp Connected!</h1>
+            <p>Your session is active and linked successfully using your persistent disk path.</p>
+            <p style="color: #666;">No QR code needed.</p>
+          </div>
+        </body>
+      </html>
     `);
   }
-  res.send(`<h1>WhatsApp QR Code</h1><p>Scan this QR code if session was cleared:</p><pre>${qrLast}</pre>`);
+
+  if (!qrLast) {
+    return res.send(`
+      <html>
+        <body style="font-family: Arial, sans-serif; text-align: center; padding-top: 50px; background: #f4f7f6;">
+          <div style="background: white; display: inline-block; padding: 40px; border-radius: 10px; box-shadow: 0 4px 10px rgba(0,0,0,0.1);">
+            <h2>⏳ Initializing WhatsApp...</h2>
+            <p>Please refresh this page in a few seconds once the QR code generates.</p>
+            <button onclick="location.reload()" style="padding: 10px 20px; background: #075e54; color: white; border: none; border-radius: 5px; cursor: pointer;">Refresh Page</button>
+          </div>
+        </body>
+      </html>
+    `);
+  }
+
+  res.send(`
+    <html>
+      <head>
+        <title>Link WhatsApp - Induu</title>
+        <script src="[https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js](https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js)"></script>
+      </head>
+      <body style="font-family: Arial, sans-serif; text-align: center; padding-top: 40px; background: #f4f7f6;">
+        <div style="background: white; display: inline-block; padding: 40px; border-radius: 10px; box-shadow: 0 4px 10px rgba(0,0,0,0.1);">
+          <h2 style="color: #075e54;">📱 Scan WhatsApp QR Code</h2>
+          <p>Open WhatsApp on your phone -> Linked Devices -> Link a Device -> Scan this code</p>
+          <div id="qrcode" style="margin: 20px auto; display: inline-block;"></div>
+          <p style="margin-top: 15px;"><button onclick="location.reload()" style="padding: 10px 20px; background: #075e54; color: white; border: none; border-radius: 5px; cursor: pointer;">Refresh QR</button></p>
+        </div>
+        <script>
+          new QRCode(document.getElementById("qrcode"), {
+            text: "${qrLast}",
+            width: 260,
+            height: 260
+          });
+        </script>
+      </body>
+    </html>
+  `);
 });
 
 app.get('/', (req, res) => {
-  res.send('Induu WhatsApp Bot server is running!');
+  res.send('Induu WhatsApp Bot server is running! Go to <a href="/qr">/qr</a> to view connection status.');
 });
 
 // Initialize database and start server + WhatsApp connection
